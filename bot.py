@@ -44,14 +44,16 @@ def test_openrouter_model(model_name, prompt, lang="tr"):
     }
 
     try:
-        with httpx.Client(timeout=30.0) as client:  # Zaman aşımı 30 saniye
+        with httpx.Client(timeout=60.0) as client:  # Zaman aşımı 60 saniye
             response = client.post(url, headers=headers, json=data)
             response.raise_for_status()
             result = response.json()
             reply = result['choices'][0]['message']['content']
             return reply
-    except requests.exceptions.HTTPError as e:
+    except httpx.HTTPStatusError as e:
         return f"❌ HTTP Hatası: {e}"
+    except httpx.TimeoutException:
+        return "❌ Zaman Aşımı: OpenRouter API yanıt vermedi."
     except Exception as e:
         return f"❌ Genel Hata: {e}"
 
@@ -79,7 +81,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lang = "tr"  # Varsayılan Türkçe
 
     # Yedek dil kontrolü (kısa metinler için)
-    if len(words) <= 2:  # Kısa metinlerde özel kontrol
+    if len(words) <= 3:  # Kısa metinlerde özel kontrol
         known_words = {
             "tr": ["selam", "merhaba", "nasılsın", "hobilerin", "özledin"],
             "en": ["hello", "how", "are", "you", "old"],
@@ -99,8 +101,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(response)
 
 def main():
-    # Zaman aşımı için özel HTTP istemcisi
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).http_client(httpx.AsyncClient(timeout=30.0)).build()
+    # Varsayılan HTTP istemcisi ile yapılandırma
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).read_timeout(60.0).write_timeout(60.0).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     print("Bot başlatılıyor...")
