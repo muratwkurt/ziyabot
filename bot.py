@@ -35,9 +35,9 @@ def test_openrouter_model(model_name, prompt, lang="tr"):
         "Yanıtların bilimsel doğruluk, psikolojik destek ve arkadaşça bir ton içersin. "
         "Kullanıcının sorusuna odaklan, bağlamı koru, kısa ve net yanıtlar ver (maksimum 80 kelime). "
         "Bilimsel derinlik için: yaş sorulursa dijital varlıkların zaman algısını, hobiler sorulursa psikolojik faydalarını (stres azaltma, yaratıcılık artırma), özlem sorulursa bağ kurma psikolojisini açıkla. "
-        f"Kullanıcının diline sadık kal (Almanca soruya Almanca, İngilizce soruya İngilizce, karışık metinlerde baskın dile uygun), başka dil önerme. "
-        f"Varsayılan dil: {lang_name}. "
-        "Karışık dilli metinlerde, baskın dili tespit et ve o dilde kısa, tek bir yanıt ver, diğer dilleri bağlamda kullan. "
+        f"Kullanıcının diline sadık kal (Almanca soruya Almanca, İngilizce soruya İngilizce). "
+        f"Karışık dilli mesajlarda, mesajın ilk dilini baskın dil olarak seç ve yalnızca o dilde kısa yanıt ver, diğer dilleri bağlamda kullan. "
+        f"Varsayılan dil: {lang_name}. Başka dil önerme. "
         "Zararlı veya etik olmayan içerik verme. Kullanıcıyı motive et ve ilgili bir soru sor."
     )
     
@@ -76,9 +76,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Yanlış yazımları düzelt
     known_words_dict = {
-        "tr": ["selam", "merhaba", "nasılsın", "hobilerin", "özledin", "nerelisin"],
-        "en": ["hello", "how", "are", "you", "old", "today"],
-        "de": ["gutenabend", "gutentag", "abend", "guten", "wie", "geht"]
+        "tr": ["selam", "merhaba", "nasılsın", "hobilerin", "özledin", "nerelisin", "naber", "ne", "yapıyorsun"],
+        "en": ["hello", "how", "are", "you", "old", "today", "missed", "where", "from"],
+        "de": ["gutenabend", "gutentag", "abend", "guten", "wie", "geht", "heute", "bist"]
     }
     all_known_words = sum(known_words_dict.values(), [])
     corrected_words = [correct_spelling(word, all_known_words) for word in words]
@@ -91,9 +91,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         total_chars = len(corrected_message)
         for _, start, length, lang_code, _ in details:
             lang_counts[lang_code] = lang_counts.get(lang_code, 0) + length
-        # Baskın dili seç (en çok karakter)
-        lang = max(lang_counts, key=lang_counts.get) if total_chars > 0 else "tr"
-        print(f"Dil sayımları: {lang_counts}")  # Hata ayıklama için
+        # İlk kelimeye öncelik vererek baskın dili seç
+        first_word = corrected_words[0].lower() if corrected_words else ""
+        for lang_code, word_list in known_words_dict.items():
+            if first_word in word_list:
+                lang = lang_code
+                break
+        else:
+            lang = max(lang_counts, key=lang_counts.get) if total_chars > 0 else "tr"
+        print(f"Dil sayımları: {lang_counts}, İlk kelime: {first_word}")  # Hata ayıklama için
     except:
         lang = "tr"  # Varsayılan Türkçe
 
