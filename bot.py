@@ -1,7 +1,10 @@
 import requests
 import json
 import os
+import nltk
 from fastapi import FastAPI, Request
+from fastapi import FastAPI
+from contextlib import asynccontextmanager
 from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import uvicorn
@@ -10,10 +13,13 @@ from textblob import TextBlob
 import httpx
 from difflib import get_close_matches
 
+# NLTK veri setini yükle
+nltk.download('punkt_tab', quiet=True)
+
 # Environment variable'lar
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-RAILWAY_DOMAIN = os.getenv("RAILWAY_STATIC_URL", "https://your-app.railway.app")
+RAILWAY_DOMAIN = os.getenv("RAILWAY_STATIC_URL", "https://ziyabot-production.up.railway.app")
 
 app = FastAPI()
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
@@ -126,26 +132,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 application.add_handler(CommandHandler("start", start))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
+# Lifespan event: Application'ı başlat ve webhook'u ayarla
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await application.initialize()  # Application'ı başlat
+    await application.start()  # Handler'ları ve botu hazırla
+    webhook_url = f"{RAILWAY_DOMAIN}/webhook"
+    await bot.set_webhook(url=webhook_url)
+    print(f"Webhook ayarlandı: {webhook_url}")
+    yield
+    await application.stop()  # Application'ı düzgün kapat
+
+app = FastAPI(lifespan=lifespan)
+
 # Webhook endpoint'i
 @app.post("/webhook")
 async def webhook(request: Request):
     update = Update.de_json(await request.json(), bot)
     await application.process_update(update)
     return {"ok": True}
-
-# Startup event: Application'ı başlat ve webhook'u ayarla
-@app.on_event("startup")
-async def on_startup():
-    await application.initialize()  # Application'ı başlat
-    await application.start()  # Handler'ları ve botu hazırla
-    webhook_url = f"{RAILWAY_DOMAIN}/webhook"
-    await bot.set_webhook(url=webhook_url)
-    print(f"Webhook ayarlandı: {webhook_url}")
-
-# Shutdown event: Application'ı düzgün kapat
-@app.on_event("shutdown")
-async def on_shutdown():
-    await application.stop()
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8080)
