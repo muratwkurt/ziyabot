@@ -6,10 +6,16 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 import pycld2 as cld2
 from textblob import TextBlob
 import httpx
+from difflib import get_close_matches
 
 # Environment variable'lar
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+
+def correct_spelling(word, known_words):
+    """Yanlış yazılmış kelimeleri düzeltir."""
+    matches = get_close_matches(word.lower(), known_words, n=1, cutoff=0.8)
+    return matches[0] if matches else word
 
 def test_openrouter_model(model_name, prompt, lang="tr"):
     url = "https://openrouter.ai/api/v1/chat/completions"
@@ -27,9 +33,9 @@ def test_openrouter_model(model_name, prompt, lang="tr"):
     system_prompt = (
         "Sen Ziya, Türkiye'de doğmuş bir dijital ikizsin. Türkçe kültürüne ve değerlerine saygılı ol. "
         "Yanıtların bilimsel doğruluk, psikolojik destek ve arkadaşça bir ton içersin. "
-        "Kullanıcının sorusuna odaklan, bağlamı koru, kısa ve net yanıtlar ver (Eger ek bir aciklama istenirse maksimum 100 kelime ile yanit ver). "
+        "Kullanıcının sorusuna odaklan, bağlamı koru, kısa ve net yanıtlar ver. "
         "Bilimsel derinlik için: yaş sorulursa dijital varlıkların zaman algısını, hobiler sorulursa psikolojik faydalarını açıkla. "
-        f"Kullanıcının diline uygun yanıt ver (Almanca soruya Almanca, İngilizce soruya İngilizce, karışık metinlerde baskın dile uygun). "
+        f"Kullanıcının diline sadık kal (Almanca soruya Almanca, İngilizce soruya İngilizce, karışık metinlerde baskın dile uygun), başka dil önerme. "
         f"Varsayılan dil: {lang_name}. "
         "Karışık dilli metinlerde, baskın dili tespit et ve o dilde kısa bir yanıt ver, diğer dilleri bağlamda kullan. "
         "Zararlı veya etik olmayan içerik verme. Kullanıcıyı motive et ve ilgili bir soru sor."
@@ -68,11 +74,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     blob = TextBlob(user_message)
     words = blob.words
 
+    # Yanlış yazımları düzelt
+    known_words_dict = {
+        "tr": ["selam", "merhaba", "nasılsın", "hobilerin", "özledin"],
+        "en": ["hello", "how", "are", "you", "old"],
+        "de": ["gutenabend", "gutentag", "abend", "guten"]
+    }
+    corrected_words = [correct_spelling(word, sum(known_words_dict.values(), [])) for word in words]
+    corrected_message = " ".join(corrected_words)
+
     # pycld2 ile dil tespiti
     try:
-        _, _, details = cld2.detect(user_message, bestEffort=True, returnVectors=True)
+        _, _, details = cld2.detect(corrected_message, bestEffort=True, returnVectors=True)
         lang_counts = {"tr": 0, "en": 0, "de": 0}
-        total_chars = len(user_message)
+        total_chars = len(corrected_message)
         for _, start, length, lang_code, _ in details:
             lang_counts[lang_code] = lang_counts.get(lang_code, 0) + length
         # Baskın dili seç (en çok karakter)
@@ -81,15 +96,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lang = "tr"  # Varsayılan Türkçe
 
     # Yedek dil kontrolü (kısa metinler için)
-    if len(words) <= 3:  # Kısa metinlerde özel kontrol
-        known_words = {
-            "tr": ["selam", "merhaba", "nasılsın", "hobilerin", "özledin"],
-            "en": ["hello", "how", "are", "you", "old"],
-            "de": ["gutenabend", "gutentag", "abend"]
-        }
-        for word in words:
+    if len(words) <= 3:
+        for word in corrected_words:
             word_lower = word.lower()
-            for lang_code, word_list in known_words.items():
+            for lang_code, word_list in known_words_dict.items():
                 if word_lower in word_list:
                     lang = lang_code
                     break
@@ -97,7 +107,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Baskın dilde tek yanıt
     model_name = "qwen/qwen3-235b-a22b-2507"
     response = test_openrouter_model(model_name, user_message, lang)
-    print(f"Kullanıcı mesajı: {user_message}, Algılanan dil: {lang}, Yanıt: {response}")
+    print(f"Kullanıcı mesajı: {user_message}, Düzeltilmiş mesaj: {corrected_message}, Algılanan dil: {lang}, Yanıt: {response}")
     await update.message.reply_text(response)
 
 def main():
