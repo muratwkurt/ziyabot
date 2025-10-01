@@ -2,8 +2,9 @@ import requests
 import json
 import os
 import nltk
+import tempfile
+import asyncio
 from fastapi import FastAPI, Request
-from fastapi import FastAPI
 from contextlib import asynccontextmanager
 from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -12,6 +13,8 @@ import pycld2 as cld2
 from textblob import TextBlob
 import httpx
 from difflib import get_close_matches
+from elevenlabs.client import ElevenLabs
+from elevenlabs import save
 
 # NLTK veri setini yükle
 nltk.download('punkt_tab', quiet=True)
@@ -19,11 +22,16 @@ nltk.download('punkt_tab', quiet=True)
 # Environment variable'lar
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+ASSEMBLYAI_KEY = os.getenv("ASSEMBLYAI_KEY")
+ELEVENLABS_KEY = os.getenv("ELEVENLABS_KEY")
 RAILWAY_DOMAIN = os.getenv("RAILWAY_STATIC_URL", "https://ziyabot-production.up.railway.app")
 
 app = FastAPI()
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 application = Application.builder().token(TELEGRAM_BOT_TOKEN).read_timeout(60.0).write_timeout(60.0).build()
+
+# ElevenLabs client
+elevenlabs_client = ElevenLabs(api_key=ELEVENLABS_KEY)
 
 def correct_spelling(word, known_words):
     """Yanlış yazılmış kelimeleri düzeltir."""
@@ -76,6 +84,45 @@ def test_openrouter_model(model_name, prompt, lang="tr"):
     except Exception as e:
         return f"❌ Genel Hata: {e}"
 
+# STT: AssemblyAI ile sesi metne dönüştür
+async def speech_to_text(audio_path):
+    # Audio'yu AssemblyAI'ye upload et
+    upload_url = "https://api.assemblyai.com/v2/upload"
+    headers = {"authorization": ASSEMBLYAI_KEY}
+    with open(audio_path, "rb") as f:
+        response = requests.post(upload_url, headers=headers, files={"file": f})
+    audio_url = response.json()["upload_url"]
+
+    # Transcript isteği gönder
+    transcript_url = "https://api.assemblyai.com/v2/transcript"
+    json_data = {"audio_url": audio_url}
+    response = requests.post(transcript_url, json=json_data, headers=headers)
+    transcript_id = response.json()["id"]
+
+    # Poll for completion
+    while True:
+        response = requests.get(f"https://api.assemblyai.com/v2/transcript/{transcript_id}", headers=headers)
+        status = response.json()["status"]
+        if status == "completed":
+            return response.json()["text"]
+        elif status == "error":
+            return "STT Hatası: Transkripsiyon başarısız."
+        await asyncio.sleep(1)  # Bekle
+
+# TTS: ElevenLabs ile metni sese dönüştür
+async def text_to_speech(text, lang="tr"):
+    voice_id = "mBUB5zYuPwfVE6DTcEjf"  # Eda Atlas
+    model_id = "eleven_multilingual_v2"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_file:
+        audio = elevenlabs_client.text_to_speech.convert(
+            text=text,
+            voice_id=voice_id,
+            model_id=model_id,
+            output_format="mp3_22050_32"  # MP3 format
+        )
+        save(audio, tmp_file.name)
+        return tmp_file.name
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Merhaba! Ben Ziya, dijital ikizin. Yaz veya sesle konuş, sana bilimsel, psikolojik ve arkadaşça yanıt vereyim! 😊 "
@@ -83,11 +130,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Yazılı mesaj işleme (mevcut kod)
     user_message = update.message.text
     blob = TextBlob(user_message)
     words = blob.words
 
-    # Yanlış yazımları düzelt
+    # Yanlış yazımları düzelt (mevcut mantık)
     known_words_dict = {
         "tr": ["selam", "merhaba", "nasılsın", "hobilerin", "özledin", "nerelisin", "naber", "ne", "yapıyorsun"],
         "en": ["hello", "how", "are", "you", "old", "today", "missed", "where", "from"],
@@ -97,7 +145,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     corrected_words = [correct_spelling(word, all_known_words) for word in words]
     corrected_message = " ".join(corrected_words)
 
-    # pycld2 ile dil tespiti
+    # pycld2 ile dil tespiti (mevcut mantık)
     try:
         _, _, details = cld2.detect(corrected_message, bestEffort=True, returnVectors=True)
         lang_counts = {"tr": 0, "en": 0, "de": 0}
@@ -105,13 +153,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for _, start, length, lang_code, _ in details:
             lang_counts[lang_code] = lang_counts.get(lang_code, 0) + length
         first_word = corrected_words[0].lower() if corrected_words else ""
+        lang = "tr"
         for lang_code, word_list in known_words_dict.items():
             if first_word in word_list:
                 lang = lang_code
                 break
         else:
             lang = max(lang_counts, key=lang_counts.get) if total_chars > 0 else "tr"
-        print(f"Dil sayımları: {lang_counts}, İlk kelime: {first_word}")
     except:
         lang = "tr"
 
@@ -125,27 +173,64 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     model_name = "qwen/qwen3-235b-a22b-2507"
     response = test_openrouter_model(model_name, user_message, lang)
-    print(f"Kullanıcı mesajı: {user_message}, Düzeltilmiş mesaj: {corrected_message}, Algılanan dil: {lang}, Yanıt: {response}")
     await update.message.reply_text(response)
+
+# Yeni: Sesli mesaj handler
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    voice = update.message.voice
+    await update.message.reply_text("Sesli mesajını dinliyorum... Transkripsiyon yapılıyor.")
+
+    # Ses dosyasını indir (OGG formatı)
+    file = await context.bot.get_file(voice.file_id)
+    audio_path = f"voice_{voice.file_id}.ogg"
+    await file.download_to_drive(audio_path)
+
+    # STT: Metne dönüştür
+    transcribed_text = await speech_to_text(audio_path)
+
+    if "STT Hatası" in transcribed_text:
+        await update.message.reply_text(transcribed_text)
+        os.remove(audio_path)
+        return
+
+    await update.message.reply_text(f"Transkripsiyon: {transcribed_text}")
+
+    # Qwen3 ile yanıt üret (dil tespiti transcribed_text ile)
+    lang = "tr"  # Varsayılan, mevcut dil tespiti mantığını uygula
+    model_name = "qwen/qwen3-235b-a22b-2507"
+    response_text = test_openrouter_model(model_name, transcribed_text, lang)
+
+    # TTS: Yanıtı sese dönüştür
+    audio_response_path = await text_to_speech(response_text, lang)
+
+    # Sesli yanıt gönder
+    with open(audio_response_path, 'rb') as audio_file:
+        await update.message.reply_voice(voice=audio_file)
+
+    # Temizlik
+    os.remove(audio_path)
+    os.remove(audio_response_path)
+
+    await update.message.reply_text("Sesli yanıt gönderildi!")
 
 # Handler'ları ekle
 application.add_handler(CommandHandler("start", start))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+application.add_handler(MessageHandler(filters.VOICE, handle_voice))
 
-# Lifespan event: Application'ı başlat ve webhook'u ayarla
+# Lifespan event
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await application.initialize()  # Application'ı başlat
-    await application.start()  # Handler'ları ve botu hazırla
+    await application.initialize()
+    await application.start()
     webhook_url = f"{RAILWAY_DOMAIN}/webhook"
     await bot.set_webhook(url=webhook_url)
     print(f"Webhook ayarlandı: {webhook_url}")
     yield
-    await application.stop()  # Application'ı düzgün kapat
+    await application.stop()
 
 app = FastAPI(lifespan=lifespan)
 
-# Webhook endpoint'i
 @app.post("/webhook")
 async def webhook(request: Request):
     update = Update.de_json(await request.json(), bot)
