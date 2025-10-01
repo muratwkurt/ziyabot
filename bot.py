@@ -122,6 +122,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print(f"Kullanıcı mesajı: {user_message}, Düzeltilmiş mesaj: {corrected_message}, Algılanan dil: {lang}, Yanıt: {response}")
     await update.message.reply_text(response)
 
+# Handler'ları ekle
+application.add_handler(CommandHandler("start", start))
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle/camera_message))
+
 # Webhook endpoint'i
 @app.post("/webhook")
 async def webhook(request: Request):
@@ -129,12 +133,19 @@ async def webhook(request: Request):
     await application.process_update(update)
     return {"ok": True}
 
-# Startup event: Webhook'u Telegram'a bildir
+# Startup event: Application'ı başlat ve webhook'u ayarla
 @app.on_event("startup")
 async def on_startup():
+    await application.initialize()  # Application'ı başlat
+    await application.start()  # Handler'ları ve botu hazırla
     webhook_url = f"{RAILWAY_DOMAIN}/webhook"
     await bot.set_webhook(url=webhook_url)
     print(f"Webhook ayarlandı: {webhook_url}")
+
+# Shutdown event: Application'ı düzgün kapat
+@app.on_event("shutdown")
+async def on_shutdown():
+    await application.stop()
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8080)
