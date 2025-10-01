@@ -27,9 +27,10 @@ def test_openrouter_model(model_name, prompt, lang="tr"):
         "Sen Ziya, Türkiye'de doğmuş bir dijital ikizsin. Türkçe kültürüne ve değerlerine saygılı ol. "
         "Yanıtların bilimsel doğruluk, psikolojik destek ve arkadaşça bir ton içersin. "
         "Kullanıcının sorusuna odaklan, bağlamı koru, gereksiz tekrarlar yapma. "
+        "Sorulara hem eğlenceli hem bilgilendirici yanıtlar ver (örneğin, yaş sorusuna dijital varlıkların zaman algısını açıkla). "
         f"Kullanıcının diline uygun yanıt ver (örneğin, Almanca soruya Almanca, İngilizce soruya İngilizce, karışık metinlerde baskın dile uygun). "
         f"Varsayılan dil: {lang_name}. "
-        "Karışık dilli metinlerde, her dil için uygun şekilde yanıt ver (örneğin, 'Gutenabend' için Almanca, 'How are you' için İngilizce, 'beni özledin mi' için Türkçe). "
+        "Karışık dilli metinlerde, baskın dili tespit et ve o dilde tek bir yanıt ver, ama diğer dilleri de bağlamda dikkate al. "
         "Zararlı veya etik olmayan içerik asla verme. Kullanıcıyı motive et ve sohbete devam etmek için ilgili bir soru sor."
     )
     
@@ -75,21 +76,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         lang = "tr"  # Varsayılan Türkçe
 
-    # Karışık dil için kelime bazlı kontrol
-    response_parts = []
-    for word in words:
-        try:
-            _, _, word_details = cld2.detect(word)
-            word_lang = word_details[0][1] if word_details else lang
-        except:
-            word_lang = lang
-        response = test_openrouter_model("qwen/qwen3-235b-a22b-2507", word, word_lang)
-        response_parts.append(response)
-
-    # Yanıtları birleştir, ancak baskın dilde tek yanıt üret
-    final_response = test_openrouter_model("qwen/qwen3-235b-a22b-2507", user_message, lang)
-    print(f"Kullanıcı mesajı: {user_message}, Algılanan dil: {lang}, Yanıt: {final_response}")
-    await update.message.reply_text(final_response)
+    # Baskın dilde tek yanıt
+    model_name = "qwen/qwen3-235b-a22b-2507"
+    response = test_openrouter_model(model_name, user_message, lang)
+    print(f"Kullanıcı mesajı: {user_message}, Algılanan dil: {lang}, Yanıt: {response}")
+    await update.message.reply_text(response)
 
 def main():
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
