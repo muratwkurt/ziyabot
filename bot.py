@@ -124,7 +124,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Handler'ları ekle
 application.add_handler(CommandHandler("start", start))
-application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle/camera_message))
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
 # Webhook endpoint'i
 @app.post("/webhook")
