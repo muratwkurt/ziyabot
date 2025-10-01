@@ -5,6 +5,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import pycld2 as cld2
 from textblob import TextBlob
+import httpx
 
 # Environment variable'lar
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
@@ -26,12 +27,12 @@ def test_openrouter_model(model_name, prompt, lang="tr"):
     system_prompt = (
         "Sen Ziya, Türkiye'de doğmuş bir dijital ikizsin. Türkçe kültürüne ve değerlerine saygılı ol. "
         "Yanıtların bilimsel doğruluk, psikolojik destek ve arkadaşça bir ton içersin. "
-        "Kullanıcının sorusuna odaklan, bağlamı koru, kısa ve net yanıtlar ver. "
+        "Kullanıcının sorusuna odaklan, bağlamı koru, kısa ve net yanıtlar ver (maksimum 100 kelime). "
         "Bilimsel derinlik için: yaş sorulursa dijital varlıkların zaman algısını, hobiler sorulursa psikolojik faydalarını açıkla. "
-        f"Kullanıcının diline uygun yanıt ver (örneğin, Almanca soruya Almanca, İngilizce soruya İngilizce, karışık metinlerde baskın dile uygun). "
+        f"Kullanıcının diline uygun yanıt ver (Almanca soruya Almanca, İngilizce soruya İngilizce, karışık metinlerde baskın dile uygun). "
         f"Varsayılan dil: {lang_name}. "
         "Karışık dilli metinlerde, baskın dili tespit et ve o dilde kısa bir yanıt ver, diğer dilleri bağlamda kullan. "
-        "Zararlı veya etik olmayan içerik asla verme. Kullanıcıyı motive et ve sohbete devam etmek için ilgili bir soru sor."
+        "Zararlı veya etik olmayan içerik verme. Kullanıcıyı motive et ve ilgili bir soru sor."
     )
     
     data = {
@@ -43,11 +44,12 @@ def test_openrouter_model(model_name, prompt, lang="tr"):
     }
 
     try:
-        response = requests.post(url, headers=headers, json=data)
-        response.raise_for_status()
-        result = response.json()
-        reply = result['choices'][0]['message']['content']
-        return reply
+        with httpx.Client(timeout=30.0) as client:  # Zaman aşımı 30 saniye
+            response = client.post(url, headers=headers, json=data)
+            response.raise_for_status()
+            result = response.json()
+            reply = result['choices'][0]['message']['content']
+            return reply
     except requests.exceptions.HTTPError as e:
         return f"❌ HTTP Hatası: {e}"
     except Exception as e:
@@ -66,7 +68,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # pycld2 ile dil tespiti
     try:
-        _, _, details = cld2.detect(user_message, returnVectors=True)
+        _, _, details = cld2.detect(user_message, bestEffort=True, returnVectors=True)
         lang_counts = {"tr": 0, "en": 0, "de": 0}
         total_chars = len(user_message)
         for _, start, length, lang_code, _ in details:
@@ -76,6 +78,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         lang = "tr"  # Varsayılan Türkçe
 
+    # Yedek dil kontrolü (kısa metinler için)
+    if len(words) <= 2:  # Kısa metinlerde özel kontrol
+        known_words = {
+            "tr": ["selam", "merhaba", "nasılsın", "hobilerin", "özledin"],
+            "en": ["hello", "how", "are", "you", "old"],
+            "de": ["gutenabend", "gutentag", "abend"]
+        }
+        for word in words:
+            word_lower = word.lower()
+            for lang_code, word_list in known_words.items():
+                if word_lower in word_list:
+                    lang = lang_code
+                    break
+
     # Baskın dilde tek yanıt
     model_name = "qwen/qwen3-235b-a22b-2507"
     response = test_openrouter_model(model_name, user_message, lang)
@@ -83,7 +99,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(response)
 
 def main():
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    # Zaman aşımı için özel HTTP istemcisi
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).http_client(httpx.AsyncClient(timeout=30.0)).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     print("Bot başlatılıyor...")
