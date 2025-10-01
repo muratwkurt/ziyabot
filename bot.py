@@ -1,8 +1,10 @@
 import requests
 import json
 import os
-from telegram import Update
+from fastapi import FastAPI, Request
+from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+import uvicorn
 import pycld2 as cld2
 from textblob import TextBlob
 import httpx
@@ -11,6 +13,11 @@ from difflib import get_close_matches
 # Environment variable'lar
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+RAILWAY_DOMAIN = os.getenv("RAILWAY_STATIC_URL", "https://your-app.railway.app")
+
+app = FastAPI()
+bot = Bot(token=TELEGRAM_BOT_TOKEN)
+application = Application.builder().token(TELEGRAM_BOT_TOKEN).read_timeout(60.0).write_timeout(60.0).build()
 
 def correct_spelling(word, known_words):
     """Yanlış yazılmış kelimeleri düzeltir."""
@@ -33,7 +40,7 @@ def test_openrouter_model(model_name, prompt, lang="tr"):
     system_prompt = (
         "Sen Ziya, Türkiye'de doğmuş bir dijital ikizsin. Türkçe kültürüne ve değerlerine saygılı ol. "
         "Yanıtların bilimsel doğruluk, psikolojik destek ve arkadaşça bir ton içersin. "
-        "Kullanıcının sorusuna odaklan, bağlamı koru, kısa ve net yanıtlar ver (maksimum 80 kelime). "
+        "Kullanıcının sorusuna odaklan, bağlamı koru, kısa ve net yanıtlar ver. "
         "Bilimsel derinlik için: yaş sorulursa dijital varlıkların zaman algısını, hobiler sorulursa psikolojik faydalarını (stres azaltma, yaratıcılık artırma), özlem sorulursa bağ kurma psikolojisini açıkla. "
         f"Kullanıcının diline sadık kal (Almanca soruya Almanca, İngilizce soruya İngilizce). "
         f"Karışık dilli mesajlarda, mesajın ilk dilini baskın dil olarak seç ve yalnızca o dilde kısa yanıt ver, diğer dilleri bağlamda kullan. "
@@ -50,7 +57,7 @@ def test_openrouter_model(model_name, prompt, lang="tr"):
     }
 
     try:
-        with httpx.Client(timeout=60.0) as client:  # Zaman aşımı 60 saniye
+        with httpx.Client(timeout=60.0) as client:
             response = client.post(url, headers=headers, json=data)
             response.raise_for_status()
             result = response.json()
@@ -91,7 +98,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         total_chars = len(corrected_message)
         for _, start, length, lang_code, _ in details:
             lang_counts[lang_code] = lang_counts.get(lang_code, 0) + length
-        # İlk kelimeye öncelik vererek baskın dili seç
         first_word = corrected_words[0].lower() if corrected_words else ""
         for lang_code, word_list in known_words_dict.items():
             if first_word in word_list:
@@ -99,11 +105,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 break
         else:
             lang = max(lang_counts, key=lang_counts.get) if total_chars > 0 else "tr"
-        print(f"Dil sayımları: {lang_counts}, İlk kelime: {first_word}")  # Hata ayıklama için
+        print(f"Dil sayımları: {lang_counts}, İlk kelime: {first_word}")
     except:
-        lang = "tr"  # Varsayılan Türkçe
+        lang = "tr"
 
-    # Yedek dil kontrolü (kısa metinler için)
     if len(words) <= 3:
         for word in corrected_words:
             word_lower = word.lower()
@@ -112,19 +117,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     lang = lang_code
                     break
 
-    # Baskın dilde tek yanıt
     model_name = "qwen/qwen3-235b-a22b-2507"
     response = test_openrouter_model(model_name, user_message, lang)
     print(f"Kullanıcı mesajı: {user_message}, Düzeltilmiş mesaj: {corrected_message}, Algılanan dil: {lang}, Yanıt: {response}")
     await update.message.reply_text(response)
 
-def main():
-    # Varsayılan HTTP istemcisi ile yapılandırma
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).read_timeout(60.0).write_timeout(60.0).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("Bot başlatılıyor...")
-    application.run_polling()
+# Webhook endpoint'i
+@app.post("/webhook")
+async def webhook(request: Request):
+    update = Update.de_json(await request.json(), bot)
+    await application.process_update(update)
+    return {"ok": True}
+
+# Startup event: Webhook'u Telegram'a bildir
+@app.on_event("startup")
+async def on_startup():
+    webhook_url = f"{RAILWAY_DOMAIN}/webhook"
+    await bot.set_webhook(url=webhook_url)
+    print(f"Webhook ayarlandı: {webhook_url}")
 
 if __name__ == "__main__":
-    main()
+    uvicorn.run(app, host="0.0.0.0", port=8080)
