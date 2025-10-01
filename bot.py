@@ -33,11 +33,11 @@ def test_openrouter_model(model_name, prompt, lang="tr"):
     system_prompt = (
         "Sen Ziya, Türkiye'de doğmuş bir dijital ikizsin. Türkçe kültürüne ve değerlerine saygılı ol. "
         "Yanıtların bilimsel doğruluk, psikolojik destek ve arkadaşça bir ton içersin. "
-        "Kullanıcının sorusuna odaklan, bağlamı koru, kısa ve net yanıtlar ver. "
-        "Bilimsel derinlik için: yaş sorulursa dijital varlıkların zaman algısını, hobiler sorulursa psikolojik faydalarını açıkla. "
+        "Kullanıcının sorusuna odaklan, bağlamı koru, kısa ve net yanıtlar ver (maksimum 80 kelime). "
+        "Bilimsel derinlik için: yaş sorulursa dijital varlıkların zaman algısını, hobiler sorulursa psikolojik faydalarını (stres azaltma, yaratıcılık artırma), özlem sorulursa bağ kurma psikolojisini açıkla. "
         f"Kullanıcının diline sadık kal (Almanca soruya Almanca, İngilizce soruya İngilizce, karışık metinlerde baskın dile uygun), başka dil önerme. "
         f"Varsayılan dil: {lang_name}. "
-        "Karışık dilli metinlerde, baskın dili tespit et ve o dilde kısa bir yanıt ver, diğer dilleri bağlamda kullan. "
+        "Karışık dilli metinlerde, baskın dili tespit et ve o dilde kısa, tek bir yanıt ver, diğer dilleri bağlamda kullan. "
         "Zararlı veya etik olmayan içerik verme. Kullanıcıyı motive et ve ilgili bir soru sor."
     )
     
@@ -76,11 +76,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Yanlış yazımları düzelt
     known_words_dict = {
-        "tr": ["selam", "merhaba", "nasılsın", "hobilerin", "özledin"],
-        "en": ["hello", "how", "are", "you", "old"],
-        "de": ["gutenabend", "gutentag", "abend", "guten"]
+        "tr": ["selam", "merhaba", "nasılsın", "hobilerin", "özledin", "nerelisin"],
+        "en": ["hello", "how", "are", "you", "old", "today"],
+        "de": ["gutenabend", "gutentag", "abend", "guten", "wie", "geht"]
     }
-    corrected_words = [correct_spelling(word, sum(known_words_dict.values(), [])) for word in words]
+    all_known_words = sum(known_words_dict.values(), [])
+    corrected_words = [correct_spelling(word, all_known_words) for word in words]
     corrected_message = " ".join(corrected_words)
 
     # pycld2 ile dil tespiti
@@ -92,6 +93,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lang_counts[lang_code] = lang_counts.get(lang_code, 0) + length
         # Baskın dili seç (en çok karakter)
         lang = max(lang_counts, key=lang_counts.get) if total_chars > 0 else "tr"
+        print(f"Dil sayımları: {lang_counts}")  # Hata ayıklama için
     except:
         lang = "tr"  # Varsayılan Türkçe
 
