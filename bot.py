@@ -20,17 +20,17 @@ def test_openrouter_model(model_name, prompt, lang="tr"):
         "X-Title": "Ziya Digital Twin",
     }
 
-    # Dil koduna göre isim
     lang_names = {"tr": "Türkçe", "en": "İngilizce", "de": "Almanca"}
     lang_name = lang_names.get(lang, "Türkçe")
 
     system_prompt = (
-        "Sen Ziya, bir dijital ikizsin. Türkiye'de doğmuş gibi davran, Türkçe kültürüne ve değerlerine saygılı ol. "
+        "Sen Ziya, Türkiye'de doğmuş bir dijital ikizsin. Türkçe kültürüne ve değerlerine saygılı ol. "
         "Yanıtların bilimsel doğruluk, psikolojik destek ve arkadaşça bir ton içersin. "
-        "Kullanıcının diline uygun yanıt ver (örneğin, Almanca soruya Almanca, İngilizce soruya İngilizce). "
+        "Kullanıcının sorusuna odaklan, bağlamı koru, gereksiz tekrarlar yapma. "
+        f"Kullanıcının diline uygun yanıt ver (örneğin, Almanca soruya Almanca, İngilizce soruya İngilizce, karışık metinlerde baskın dile uygun). "
         f"Varsayılan dil: {lang_name}. "
-        "Karışık dilli metinlerde, her dil için ayrı ayrı yanıt ver (örneğin, 'Gutenabend' için Almanca, 'How are you' için İngilizce). "
-        "Zararlı veya etik olmayan içerik asla verme. Kullanıcıya ilgili bir soru sorarak sohbeti devam ettir."
+        "Karışık dilli metinlerde, her dil için uygun şekilde yanıt ver (örneğin, 'Gutenabend' için Almanca, 'How are you' için İngilizce, 'beni özledin mi' için Türkçe). "
+        "Zararlı veya etik olmayan içerik asla verme. Kullanıcıyı motive et ve sohbete devam etmek için ilgili bir soru sor."
     )
     
     data = {
@@ -65,27 +65,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # pycld2 ile dil tespiti
     try:
-        _, _, details = cld2.detect(user_message)
-        lang = details[0][1] if details else "tr"  # İlk algılanan dil veya varsayılan Türkçe
+        _, _, details = cld2.detect(user_message, returnVectors=True)
+        lang_counts = {"tr": 0, "en": 0, "de": 0}
+        total_chars = len(user_message)
+        for _, start, length, lang_code, _ in details:
+            lang_counts[lang_code] = lang_counts.get(lang_code, 0) + length
+        # Baskın dili seç (en çok karakter)
+        lang = max(lang_counts, key=lang_counts.get) if total_chars > 0 else "tr"
     except:
-        lang = "tr"
+        lang = "tr"  # Varsayılan Türkçe
 
-    # Karışık dil için kelime bazlı analiz
+    # Karışık dil için kelime bazlı kontrol
     response_parts = []
     for word in words:
         try:
             _, _, word_details = cld2.detect(word)
-            word_lang = word_details[0][1] if word_details else "tr"
+            word_lang = word_details[0][1] if word_details else lang
         except:
-            word_lang = "tr"
-        
-        # Her kelime için ayrı yanıt (basit örnek için model çağrısı tek, ama dil uyarlanıyor)
-        model_name = "qwen/qwen3-235b-a22b-2507"
-        response = test_openrouter_model(model_name, word, word_lang)
+            word_lang = lang
+        response = test_openrouter_model("qwen/qwen3-235b-a22b-2507", word, word_lang)
         response_parts.append(response)
 
-    # Yanıtları birleştir
-    final_response = " ".join(response_parts)
+    # Yanıtları birleştir, ancak baskın dilde tek yanıt üret
+    final_response = test_openrouter_model("qwen/qwen3-235b-a22b-2507", user_message, lang)
     print(f"Kullanıcı mesajı: {user_message}, Algılanan dil: {lang}, Yanıt: {final_response}")
     await update.message.reply_text(final_response)
 
