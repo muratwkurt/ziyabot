@@ -15,7 +15,6 @@ import httpx
 from difflib import get_close_matches
 from elevenlabs.client import ElevenLabs
 from elevenlabs import save
-from pydub import AudioSegment
 
 # NLTK veri setini yükle
 nltk.download('punkt_tab', quiet=True)
@@ -85,18 +84,13 @@ def test_openrouter_model(model_name, prompt, lang="tr"):
     except Exception as e:
         return f"❌ Genel Hata: {e}"
 
-# STT: AssemblyAI ile sesi metne dönüştür (Hata detaylandırma eklendi)
+# STT: AssemblyAI ile sesi metne dönüştür (pydub kaldırıldı, doğrudan OGG gönder)
 async def speech_to_text(audio_path):
     try:
-        # OGG'yi MP3'e dönüştür (AssemblyAI OGG destekler, ama emin olalım)
-        audio = AudioSegment.from_ogg(audio_path)
-        mp3_path = audio_path.replace(".ogg", ".mp3")
-        audio.export(mp3_path, format="mp3")
-
-        # Audio'yu AssemblyAI'ye upload et
+        # Audio'yu AssemblyAI'ye upload et (OGG doğrudan desteklenir)
         upload_url = "https://api.assemblyai.com/v2/upload"
         headers = {"authorization": ASSEMBLYAI_KEY}
-        with open(mp3_path, "rb") as f:
+        with open(audio_path, "rb") as f:
             response = requests.post(upload_url, headers=headers, files={"file": f})
             response.raise_for_status()
         audio_url = response.json().get("upload_url")
@@ -119,13 +113,10 @@ async def speech_to_text(audio_path):
             result = response.json()
             status = result.get("status")
             if status == "completed":
-                os.remove(mp3_path)
                 return result.get("text", "Metin bulunamadı")
             elif status == "error":
-                os.remove(mp3_path)
                 return f"STT Hatası: Transkripsiyon başarısız, hata: {result.get('error', 'Bilinmeyen hata')}"
             await asyncio.sleep(1)
-        os.remove(mp3_path)
         return "STT Hatası: Zaman aşımı, transkripsiyon tamamlanmadı"
     except requests.exceptions.HTTPError as e:
         return f"STT Hatası: HTTP hatası, {e.response.status_code}: {e.response.text}"
