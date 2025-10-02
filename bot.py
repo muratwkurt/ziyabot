@@ -84,9 +84,14 @@ def test_openrouter_model(model_name, prompt, lang="tr"):
     except Exception as e:
         return f"❌ Genel Hata: {e}"
 
-# STT: AssemblyAI ile sesi metne dönüştür (pydub kaldırıldı, doğrudan OGG gönder)
+# STT: AssemblyAI ile sesi metne dönüştür (Dosya kontrolü eklendi)
 async def speech_to_text(audio_path):
     try:
+        # Dosya boyutunu kontrol et
+        file_size = os.path.getsize(audio_path)
+        if file_size < 100:  # 100 bayt'tan küçükse boş/bozuk dosya
+            return f"STT Hatası: Dosya bozuk veya boş, boyut: {file_size} bayt"
+
         # Audio'yu AssemblyAI'ye upload et (OGG doğrudan desteklenir)
         upload_url = "https://api.assemblyai.com/v2/upload"
         headers = {"authorization": ASSEMBLYAI_KEY}
@@ -99,7 +104,7 @@ async def speech_to_text(audio_path):
 
         # Transcript isteği gönder
         transcript_url = "https://api.assemblyai.com/v2/transcript"
-        json_data = {"audio_url": audio_url}
+        json_data = {"audio_url": audio_url, "speech_model": "universal"}
         response = requests.post(transcript_url, json=json_data, headers=headers)
         response.raise_for_status()
         transcript_id = response.json().get("id")
@@ -196,9 +201,20 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Sesli mesajını dinliyorum... Transkripsiyon yapılıyor.")
 
     # Ses dosyasını indir (OGG formatı)
-    file = await context.bot.get_file(voice.file_id)
-    audio_path = f"voice_{voice.file_id}.ogg"
-    await file.download_to_drive(audio_path)
+    try:
+        file = await context.bot.get_file(voice.file_id)
+        audio_path = f"voice_{voice.file_id}.ogg"
+        await file.download_to_drive(audio_path)
+        
+        # Dosya boyutunu kontrol et
+        file_size = os.path.getsize(audio_path)
+        if file_size < 100:
+            await update.message.reply_text(f"STT Hatası: İndirilen dosya bozuk veya boş, boyut: {file_size} bayt")
+            os.remove(audio_path)
+            return
+    except Exception as e:
+        await update.message.reply_text(f"STT Hatası: Ses dosyası indirme hatası, {e}")
+        return
 
     # STT: Metne dönüştür
     transcribed_text = await speech_to_text(audio_path)
