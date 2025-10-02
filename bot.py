@@ -15,6 +15,7 @@ import httpx
 from difflib import get_close_matches
 from elevenlabs.client import ElevenLabs
 from elevenlabs import save
+from pydub import AudioSegment
 
 # NLTK veri setini yükle
 nltk.download('punkt_tab', quiet=True)
@@ -84,44 +85,69 @@ def test_openrouter_model(model_name, prompt, lang="tr"):
     except Exception as e:
         return f"❌ Genel Hata: {e}"
 
-# STT: AssemblyAI ile sesi metne dönüştür
+# STT: AssemblyAI ile sesi metne dönüştür (Hata detaylandırma eklendi)
 async def speech_to_text(audio_path):
-    # Audio'yu AssemblyAI'ye upload et
-    upload_url = "https://api.assemblyai.com/v2/upload"
-    headers = {"authorization": ASSEMBLYAI_KEY}
-    with open(audio_path, "rb") as f:
-        response = requests.post(upload_url, headers=headers, files={"file": f})
-    audio_url = response.json()["upload_url"]
+    try:
+        # OGG'yi MP3'e dönüştür (AssemblyAI OGG destekler, ama emin olalım)
+        audio = AudioSegment.from_ogg(audio_path)
+        mp3_path = audio_path.replace(".ogg", ".mp3")
+        audio.export(mp3_path, format="mp3")
 
-    # Transcript isteği gönder
-    transcript_url = "https://api.assemblyai.com/v2/transcript"
-    json_data = {"audio_url": audio_url}
-    response = requests.post(transcript_url, json=json_data, headers=headers)
-    transcript_id = response.json()["id"]
+        # Audio'yu AssemblyAI'ye upload et
+        upload_url = "https://api.assemblyai.com/v2/upload"
+        headers = {"authorization": ASSEMBLYAI_KEY}
+        with open(mp3_path, "rb") as f:
+            response = requests.post(upload_url, headers=headers, files={"file": f})
+            response.raise_for_status()
+        audio_url = response.json().get("upload_url")
+        if not audio_url:
+            return f"STT Hatası: Upload başarısız, yanıt: {response.text}"
 
-    # Poll for completion
-    while True:
-        response = requests.get(f"https://api.assemblyai.com/v2/transcript/{transcript_id}", headers=headers)
-        status = response.json()["status"]
-        if status == "completed":
-            return response.json()["text"]
-        elif status == "error":
-            return "STT Hatası: Transkripsiyon başarısız."
-        await asyncio.sleep(1)  # Bekle
+        # Transcript isteği gönder
+        transcript_url = "https://api.assemblyai.com/v2/transcript"
+        json_data = {"audio_url": audio_url}
+        response = requests.post(transcript_url, json=json_data, headers=headers)
+        response.raise_for_status()
+        transcript_id = response.json().get("id")
+        if not transcript_id:
+            return f"STT Hatası: Transcript ID alınamadı, yanıt: {response.text}"
+
+        # Poll for completion
+        for _ in range(30):  # Maks 30 saniye bekle
+            response = requests.get(f"https://api.assemblyai.com/v2/transcript/{transcript_id}", headers=headers)
+            response.raise_for_status()
+            result = response.json()
+            status = result.get("status")
+            if status == "completed":
+                os.remove(mp3_path)
+                return result.get("text", "Metin bulunamadı")
+            elif status == "error":
+                os.remove(mp3_path)
+                return f"STT Hatası: Transkripsiyon başarısız, hata: {result.get('error', 'Bilinmeyen hata')}"
+            await asyncio.sleep(1)
+        os.remove(mp3_path)
+        return "STT Hatası: Zaman aşımı, transkripsiyon tamamlanmadı"
+    except requests.exceptions.HTTPError as e:
+        return f"STT Hatası: HTTP hatası, {e.response.status_code}: {e.response.text}"
+    except Exception as e:
+        return f"STT Hatası: Genel hata, {e}"
 
 # TTS: ElevenLabs ile metni sese dönüştür
 async def text_to_speech(text, lang="tr"):
     voice_id = "mBUB5zYuPwfVE6DTcEjf"  # Eda Atlas
     model_id = "eleven_multilingual_v2"
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_file:
-        audio = elevenlabs_client.text_to_speech.convert(
-            text=text,
-            voice_id=voice_id,
-            model_id=model_id,
-            output_format="mp3_22050_32"  # MP3 format
-        )
-        save(audio, tmp_file.name)
-        return tmp_file.name
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_file:
+            audio = elevenlabs_client.text_to_speech.convert(
+                text=text,
+                voice_id=voice_id,
+                model_id=model_id,
+                output_format="mp3_22050_32"
+            )
+            save(audio, tmp_file.name)
+            return tmp_file.name
+    except Exception as e:
+        return f"TTS Hatası: {e}"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -130,12 +156,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Yazılı mesaj işleme (mevcut kod)
     user_message = update.message.text
     blob = TextBlob(user_message)
     words = blob.words
 
-    # Yanlış yazımları düzelt (mevcut mantık)
+    # Yanlış yazımları düzelt
     known_words_dict = {
         "tr": ["selam", "merhaba", "nasılsın", "hobilerin", "özledin", "nerelisin", "naber", "ne", "yapıyorsun"],
         "en": ["hello", "how", "are", "you", "old", "today", "missed", "where", "from"],
@@ -145,7 +170,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     corrected_words = [correct_spelling(word, all_known_words) for word in words]
     corrected_message = " ".join(corrected_words)
 
-    # pycld2 ile dil tespiti (mevcut mantık)
+    # pycld2 ile dil tespiti
     try:
         _, _, details = cld2.detect(corrected_message, bestEffort=True, returnVectors=True)
         lang_counts = {"tr": 0, "en": 0, "de": 0}
@@ -175,7 +200,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     response = test_openrouter_model(model_name, user_message, lang)
     await update.message.reply_text(response)
 
-# Yeni: Sesli mesaj handler
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     voice = update.message.voice
     await update.message.reply_text("Sesli mesajını dinliyorum... Transkripsiyon yapılıyor.")
@@ -195,13 +219,54 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"Transkripsiyon: {transcribed_text}")
 
-    # Qwen3 ile yanıt üret (dil tespiti transcribed_text ile)
-    lang = "tr"  # Varsayılan, mevcut dil tespiti mantığını uygula
+    # Dil tespiti (transkripsiyon için mevcut mantık)
+    blob = TextBlob(transcribed_text)
+    words = blob.words
+    known_words_dict = {
+        "tr": ["selam", "merhaba", "nasılsın", "hobilerin", "özledin", "nerelisin", "naber", "ne", "yapıyorsun"],
+        "en": ["hello", "how", "are", "you", "old", "today", "missed", "where", "from"],
+        "de": ["gutenabend", "gutentag", "abend", "guten", "wie", "geht", "heute", "bist"]
+    }
+    all_known_words = sum(known_words_dict.values(), [])
+    corrected_words = [correct_spelling(word, all_known_words) for word in words]
+    corrected_message = " ".join(corrected_words)
+
+    try:
+        _, _, details = cld2.detect(corrected_message, bestEffort=True, returnVectors=True)
+        lang_counts = {"tr": 0, "en": 0, "de": 0}
+        total_chars = len(corrected_message)
+        for _, start, length, lang_code, _ in details:
+            lang_counts[lang_code] = lang_counts.get(lang_code, 0) + length
+        first_word = corrected_words[0].lower() if corrected_words else ""
+        lang = "tr"
+        for lang_code, word_list in known_words_dict.items():
+            if first_word in word_list:
+                lang = lang_code
+                break
+        else:
+            lang = max(lang_counts, key=lang_counts.get) if total_chars > 0 else "tr"
+    except:
+        lang = "tr"
+
+    if len(words) <= 3:
+        for word in corrected_words:
+            word_lower = word.lower()
+            for lang_code, word_list in known_words_dict.items():
+                if word_lower in word_list:
+                    lang = lang_code
+                    break
+
+    # Qwen3 ile yanıt üret
     model_name = "qwen/qwen3-235b-a22b-2507"
     response_text = test_openrouter_model(model_name, transcribed_text, lang)
 
     # TTS: Yanıtı sese dönüştür
     audio_response_path = await text_to_speech(response_text, lang)
+
+    if "TTS Hatası" in audio_response_path:
+        await update.message.reply_text(audio_response_path)
+        os.remove(audio_path)
+        return
 
     # Sesli yanıt gönder
     with open(audio_response_path, 'rb') as audio_file:
