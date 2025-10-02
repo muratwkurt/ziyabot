@@ -84,21 +84,26 @@ def test_openrouter_model(model_name, prompt, lang="tr"):
     except Exception as e:
         return f"❌ Genel Hata: {e}"
 
-# STT: AssemblyAI ile sesi metne dönüştür (Dosya kontrolü eklendi)
+# STT: AssemblyAI ile sesi metne dönüştür
 async def speech_to_text(audio_path):
     try:
         # Dosya boyutunu kontrol et
         file_size = os.path.getsize(audio_path)
-        if file_size < 100:  # 100 bayt'tan küçükse boş/bozuk dosya
+        print(f"[STT] Dosya: {audio_path}, Boyut: {file_size} bayt")
+        if file_size < 100:
             return f"STT Hatası: Dosya bozuk veya boş, boyut: {file_size} bayt"
 
-        # Audio'yu AssemblyAI'ye upload et (OGG doğrudan desteklenir)
+        # Audio'yu AssemblyAI'ye upload et
         upload_url = "https://api.assemblyai.com/v2/upload"
-        headers = {"authorization": ASSEMBLYAI_KEY}
+        headers = {
+            "authorization": ASSEMBLYAI_KEY,
+            "content-type": "audio/ogg"
+        }
         with open(audio_path, "rb") as f:
-            response = requests.post(upload_url, headers=headers, files={"file": f})
+            response = requests.post(upload_url, headers=headers, data=f)
             response.raise_for_status()
         audio_url = response.json().get("upload_url")
+        print(f"[STT] Upload URL: {audio_url}")
         if not audio_url:
             return f"STT Hatası: Upload başarısız, yanıt: {response.text}"
 
@@ -108,6 +113,7 @@ async def speech_to_text(audio_path):
         response = requests.post(transcript_url, json=json_data, headers=headers)
         response.raise_for_status()
         transcript_id = response.json().get("id")
+        print(f"[STT] Transcript ID: {transcript_id}")
         if not transcript_id:
             return f"STT Hatası: Transcript ID alınamadı, yanıt: {response.text}"
 
@@ -117,8 +123,11 @@ async def speech_to_text(audio_path):
             response.raise_for_status()
             result = response.json()
             status = result.get("status")
+            print(f"[STT] Status: {status}")
             if status == "completed":
-                return result.get("text", "Metin bulunamadı")
+                text = result.get("text", "Metin bulunamadı")
+                print(f"[STT] Transkripsiyon: {text}")
+                return text
             elif status == "error":
                 return f"STT Hatası: Transkripsiyon başarısız, hata: {result.get('error', 'Bilinmeyen hata')}"
             await asyncio.sleep(1)
@@ -134,6 +143,7 @@ async def text_to_speech(text, lang="tr"):
     model_id = "eleven_multilingual_v2"
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_file:
+            print(f"[TTS] Oluşturulan dosya: {tmp_file.name}")
             audio = elevenlabs_client.text_to_speech.convert(
                 text=text,
                 voice_id=voice_id,
@@ -181,6 +191,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 break
         else:
             lang = max(lang_counts, key=lang_counts.get) if total_chars > 0 else "tr"
+        print(f"[Dil Tespiti] Mesaj: {corrected_message}, Dil: {lang}")
     except:
         lang = "tr"
 
@@ -194,6 +205,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     model_name = "qwen/qwen3-235b-a22b-2507"
     response = test_openrouter_model(model_name, user_message, lang)
+    print(f"[Yanıt] Kullanıcı mesajı: {user_message}, Yanıt: {response}")
     await update.message.reply_text(response)
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -204,16 +216,19 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         file = await context.bot.get_file(voice.file_id)
         audio_path = f"voice_{voice.file_id}.ogg"
+        print(f"[Voice] Dosya ID: {voice.file_id}, İndiriliyor: {audio_path}")
         await file.download_to_drive(audio_path)
         
         # Dosya boyutunu kontrol et
         file_size = os.path.getsize(audio_path)
+        print(f"[Voice] İndirilen dosya: {audio_path}, Boyut: {file_size} bayt")
         if file_size < 100:
             await update.message.reply_text(f"STT Hatası: İndirilen dosya bozuk veya boş, boyut: {file_size} bayt")
             os.remove(audio_path)
             return
     except Exception as e:
         await update.message.reply_text(f"STT Hatası: Ses dosyası indirme hatası, {e}")
+        print(f"[Voice] İndirme hatası: {e}")
         return
 
     # STT: Metne dönüştür
@@ -221,6 +236,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if "STT Hatası" in transcribed_text:
         await update.message.reply_text(transcribed_text)
+        print(f"[Voice] STT hatası: {transcribed_text}")
         os.remove(audio_path)
         return
 
@@ -252,6 +268,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 break
         else:
             lang = max(lang_counts, key=lang_counts.get) if total_chars > 0 else "tr"
+        print(f"[Voice] Dil tespiti: {corrected_message}, Dil: {lang}")
     except:
         lang = "tr"
 
@@ -266,24 +283,32 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Qwen3 ile yanıt üret
     model_name = "qwen/qwen3-235b-a22b-2507"
     response_text = test_openrouter_model(model_name, transcribed_text, lang)
+    print(f"[Voice] Qwen3 yanıt: {response_text}")
 
     # TTS: Yanıtı sese dönüştür
     audio_response_path = await text_to_speech(response_text, lang)
 
     if "TTS Hatası" in audio_response_path:
         await update.message.reply_text(audio_response_path)
+        print(f"[Voice] TTS hatası: {audio_response_path}")
         os.remove(audio_path)
         return
 
     # Sesli yanıt gönder
-    with open(audio_response_path, 'rb') as audio_file:
-        await update.message.reply_voice(voice=audio_file)
+    try:
+        with open(audio_response_path, 'rb') as audio_file:
+            print(f"[Voice] Sesli yanıt gönderiliyor: {audio_response_path}")
+            await update.message.reply_voice(voice=audio_file)
+    except Exception as e:
+        await update.message.reply_text(f"Sesli yanıt gönderilemedi: {e}")
+        print(f"[Voice] Sesli yanıt hatası: {e}")
 
     # Temizlik
     os.remove(audio_path)
     os.remove(audio_response_path)
 
     await update.message.reply_text("Sesli yanıt gönderildi!")
+    print("[Voice] İşlem tamamlandı")
 
 # Handler'ları ekle
 application.add_handler(CommandHandler("start", start))
@@ -310,4 +335,9 @@ async def webhook(request: Request):
     return {"ok": True}
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8080)
+    # Yerel test için polling, Railway için webhook
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "--polling":
+        application.run_polling()
+    else:
+        uvicorn.run(app, host="0.0.0.0", port=8080)
