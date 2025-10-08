@@ -18,6 +18,8 @@ from difflib import get_close_matches
 from elevenlabs.client import ElevenLabs
 from elevenlabs import save
 from transformers import pipeline
+import soundfile as sf
+import librosa
 
 # Loglama yapılandırması
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -42,8 +44,8 @@ application = None
 # ElevenLabs client
 elevenlabs_client = ElevenLabs(api_key=ELEVENLABS_KEY)
 
-# Whisper pipeline (global başlatma)
-whisper_pipe = pipeline("automatic-speech-recognition", model="openai/whisper-small", device=-1)  # CPU için
+# Whisper pipeline (medium model, CPU)
+whisper_pipe = pipeline("automatic-speech-recognition", model="openai/whisper-medium", device=-1)
 
 # SQLite veritabanı
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -92,8 +94,8 @@ def correct_spelling(word, known_words):
 def detect_language(message):
     """Mesajın dilini tespit et, ilk kelimeye göre doğrulama yap."""
     known_words_dict = {
-        "tr": ["selam", "merhaba", "nasılsın", "hobilerin", "özledin", "nerelisin", "naber", "ne", "yapıyorsun"],
-        "en": ["hello", "how", "are", "you", "old", "today", "missed", "where", "from"],
+        "tr": ["selam", "merhaba", "nasılsın", "hobilerin", "özledin", "nerelisin", "naber", "ne", "yapıyorsun", "lan", "hava", "bugün"],
+        "en": ["hello", "how", "are", "you", "old", "today", "missed", "where", "from", "weather"],
         "de": ["gutenabend", "gutentag", "abend", "guten", "wie", "geht", "heute", "bist"]
     }
     try:
@@ -166,10 +168,15 @@ def test_openrouter_model(model_name, prompt, lang="tr", history=""):
 
 async def speech_to_text(audio_path):
     try:
-        result = whisper_pipe(audio_path, generate_kwargs={"language": "tr"})  # Türkçe için optimize
-        transcription = result["text"]
-        logger.info(f"[STT] Transkripsiyon: {transcription}")
-        return transcription
+        # OGG'yi WAV'a çevir (Whisper için daha iyi)
+        audio, sr = librosa.load(audio_path, sr=16000)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as wav_file:
+            sf.write(wav_file.name, audio, sr)
+            result = whisper_pipe(wav_file.name, generate_kwargs={"language": "tr"})  # Türkçe için optimize
+            transcription = result["text"]
+            logger.info(f"[STT] Transkripsiyon: {transcription}")
+            os.remove(wav_file.name)
+            return transcription
     except Exception as e:
         logger.error(f"[STT] Hata: {e}")
         return f"STT Hatası: Transkripsiyon başarısız, hata: {str(e)}"
@@ -248,8 +255,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     blob = TextBlob(user_message)
     words = blob.words
     known_words_dict = {
-        "tr": ["selam", "merhaba", "nasılsın", "hobilerin", "özledin", "nerelisin", "naber", "ne", "yapıyorsun"],
-        "en": ["hello", "how", "are", "you", "old", "today", "missed", "where", "from"],
+        "tr": ["selam", "merhaba", "nasılsın", "hobilerin", "özledin", "nerelisin", "naber", "ne", "yapıyorsun", "lan", "hava", "bugün"],
+        "en": ["hello", "how", "are", "you", "old", "today", "missed", "where", "from", "weather"],
         "de": ["gutenabend", "gutentag", "abend", "guten", "wie", "geht", "heute", "bist"]
     }
     all_known_words = sum(known_words_dict.values(), [])
