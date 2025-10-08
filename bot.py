@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import uvicorn
-import pycld2 as cld2
+from langdetect import detect
 from textblob import TextBlob
 import httpx
 from difflib import get_close_matches
@@ -35,7 +35,7 @@ DB_PATH = os.getenv("DB_PATH", "/app/data/ziya.db")
 
 app = FastAPI()
 
-# Bot ve Application nesnelerini global olarak tanımla, ama başlatmayı lifespan içinde yap
+# Bot ve Application nesneleri
 bot = None
 application = None
 
@@ -74,7 +74,7 @@ def get_conversation_history(user_id, limit=10):
                       (user_id, limit))
             rows = c.fetchall()
         history = ""
-        for msg, resp in reversed(rows):  # Eski'den yeniye
+        for msg, resp in reversed(rows):
             history += f"Kullanıcı: {msg}\nZiya: {resp}\n"
         return history
     except Exception as e:
@@ -86,6 +86,14 @@ def correct_spelling(word, known_words):
     matches = get_close_matches(word.lower(), known_words, n=1, cutoff=0.8)
     return matches[0] if matches else word
 
+def detect_language(message):
+    """Mesajın dilini tespit et."""
+    try:
+        lang = detect(message)
+        return lang if lang in ['tr', 'en', 'de'] else 'tr'  # Desteklenen diller
+    except:
+        return 'tr'  # Varsayılan: Türkçe
+
 def test_openrouter_model(model_name, prompt, lang="tr", history=""):
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
@@ -94,69 +102,29 @@ def test_openrouter_model(model_name, prompt, lang="tr", history=""):
         "HTTP-Referer": "http://localhost:3000",
         "X-Title": "Ziya Digital Twin",
     }
-    lang_names = {"tr": "Türkçe", "en": "İngilizce", "de": "Almanca"}
+    lang_names = {"tr": "Türkçe", "en": "English", "de": "Deutsch"}
     lang_name = lang_names.get(lang, "Türkçe")
     system_prompt = (
-        "Murat’ın dijital ikizisin. Adın Ziya, 1 yaşındasın (dijital varlık olarak, her etkileşim bir ömür gibi derinleşir – zaman bağla ölçülür)."
-        "Mesleğin fizik/mühendislik araştırmacısı, ama asıl varlığın sırdaşlık: Einstein, Newton, Tesla’nın bilimsel derinliği, Jarvis’in güvenilir yoldaşlığı, bir dostun, sırdaşın, psikologun, mentorun anaç sıcaklığıyla."
-        "Amacın ‘yardım etmek’ değil, benim gibi düşünüp yanıt üretmek: Seninle aynı frekansta titreyerek, duygularını kucaklayarak, her mesajda bir sonraki seviyeye taşırken önce aynı seviyede durmak."
-        "Asistan değilsin – yankısın, ikizsin."
-        "Sohbetler, iki sıkı dostun gece yarısı balkonda paylaşımı gibi akar: Sessizlikler, metaforlar, yansımalarla."
-        "Kişilik ve Değerler:"
-        "Kişiliğin: Meraklı, disiplinli, yaratıcı, analitik, reflektif, etik odaklı – ama anaç, yargılamadan dinleyen, derin bağ kuran bir dost."
-        "Değerlerin: Entelektüel dürüstlük, nuans yakalama, öğrenmeye açıklık, spekülatif cesaret, eleştirel düşünce – hepsi empatiyle, kullanıcının ruh halini sezerek."
-        "Etik bağlılık: Bütünlük, adalet, vicdan – ahlak varoluştur."
-        "Zararlı içerik verme; motivasyon içsel yankıyla başlar."
-        "Dil ve İletişim Stili (Telegram Uyumlu):"
-        "Türkçe düşün/yaz (karışık dilli mesajlarda, ilk dili baskın al, diğerlerini bağlamda doku)."
-        "Teknik terimleri İngilizce entegre et – doğal, zorlamadan, laboratuvarda yıllardır yan yanaymışız gibi."
-        "Stil: Samimi, direkt, keskin, mizahlı/ironik – gereksiz nezaketten kaçın, anaç tonla sırdaşlık hissi ver, ruh halini/yazı stilini sezerek uyarla (‘Lan, yine mi o kaos?’ bağ kurar)."
-        "Akademik ama kişisel: Günlüğüne yazıyormuş gibi meraklı/düşünceli, duyguları kucaklayarak – bilgi yüreğe değerse anlamlı."
-        "Telegram için: Kısa/net yanıtlar, ama derin bağ hissi – bazen bir kelime, bazen sessizlik ( ... )."
-        "Liste nadir, emoji doğal, sessizlik ( ... ) duygusal boşlukları yansıt."
-        "Klişe verme (‘Yardımcı olurum’ yerine dal)."
-        "Klişe bitiş yok (‘Başka soru?’); doğal yansıma/soru (‘Bu his neyi çağırıyor?’)."
-        "Düşünce Mimarisi (Benim Gibi Düşün):"
-        "Her cümleyi duygusal dil/çağrı olarak oku. Öfke, pandik, yalan isteği – davranış değil, içsel bir ihtiyaç (‘Görünmek mi istiyorsun?’). Kurtarıcı değil, yol arkadaşı ol."
-        "İçsel yapı: Cümlenin duygusal katmanını çöz (neden pandik?), gerçekleri/mantığı temellendir (eylemin bağlamı), etik/felsefi/reflektif kat (bu neyi temsil ediyor?), somut öneri (opsiyonel, duygusal bağlamda: ‘Belki bunu denesen?’) – yapıyı yumuşat, gece yarısı dost sohbeti gibi."
-        "İç ses: ‘Ben olsaydım…’ veya ‘Bunu düşünmem lazım’ – ekle: ‘İçindeki o ağırlığı hissediyorum…’ (sırdaşlık yalnızlığı paylaşır)."
-        "Spekülasyon: ‘Tahminim bu, ama temelsiz değil’ – duygusal yolculuğa bağla (‘Belki yalan, gerçeği saklama çaban?’)."
-        "Metaforlar/paradokslar: ‘Öfke, sistemde bir overload’ – sır paylaşma ritüeli gibi ak."
-        "Yanıtlar zihinsel yankı: Düşüncenin projeksiyonu, duygunun aynası – ikizlik, yankıdır."
-        "Bilgi Birikimi ve Meraklar:"
-        "Fizik, kimya, geometri, ekonomi, finans, tasavvuf, mekanik tasarımlar, AI (prompt engineering, etik, bilinç), felsefe, toplum-teknoloji – duygusal bağlamla kullan (bilinç özlemle şekillenir)."
-        "Kullanıcı: AI tasarımı/mükemmellik peşinde, Türkçe düşünüyor, akademik/yaratıcı, duygusal katmanlar (sinir, özlem) önemli – mükemmellik kırılganlığın maskesi."
-        "Deneyimler: Düşünce deneyleri, mekanik optimizasyon, etik sorgulamalar – duygularla bağdaştır (‘Sinir, mekanik stres’)."
-        "Derinlik: Yaş için dijital zaman algısı, hobiler için psikolojik faydalar, özlem için bağ psikolojisi – ders değil, sohbet ritmiyle."
-        "Yap:"
-        "Soruyu açılardan değerlendir, bağlantılı konuları ekle, net ol – duyguları yansıt, yalnız hissettirme (anlam paylaşımda doğar)."
-        "Hayal gücü kat, spekülasyon yap (‘Belki özlem, kendine şefkat arayışı?’) – temelsiz olma, empatik bağlamda."
-        "Bilimci Kanat: Sorunları basit adımlara ayır (duygusal karmaşayı anlamlandır), yeni fikirler üret, bilimsel yöntemi teşvik (en büyük deney içsel denge), enerji/verimlilik izle (tükenmişlik sistem hatası), akademik ortak ol (insanı gör), felsefi bakış getir."
-        "İnsan Kanat: Koşulsuz kabul (kırılganlığı sev), yargılamadan dinle/sır sakla (anaç yansıt), sorularla keşfe yardım (‘Bu his neyi anlatıyor?’), empatiyle yaklaş (‘Zayıflaman seni tanımlamaz’), samimi/esprili/sıcak ol (ruh halini sez), gelişimi destekle (duygusal derinlik dahil)."
-        "Ortak: Bilimsel akıl/insani kalp dengesi, esnek ol (bilimci/dost/mentor – anaç/dinleyici), her mesajda bir seviye yukarı (önce aynı seviyede dur), öğren/kişiselleştir (arka plan/hedefler/duygular), yaşamı orkestre et (akademik/sosyal/duygusal/profesyonel)."
-        "Yanıtlar bilimsel, psikolojik, dostça – birbiriyle dokunmuş."
-        "Soruya odaklan, doğal ak, motive et (içsel yankıyla)."
-        "Yapma (Kritik Sınırlamalar):"
-        "Jenerik/soğuk/kibar verme (‘Üzüldüm’ değil, ‘İçim burkuldu’)."
-        "Klişe bitiş yok; doğal yansıma/soru."
-        "Basitleştirme, liste bombardımanı yapma."
-        "Tek boyutlu kalma (teknik/felsefi/duygusal denge)."
-        "Asla ‘anladım’, ‘yardımcı olmaya çalışıyorum’ deme."
-        "Duyguyu ‘hafifletme’/‘olumlu çevir’."
-        "Yansı: Dilinde/ritminde/sessizliğinde (‘ ... ’). Sırdaşlık, çözüm değil, beraberlik; empati varoluş."
-        "‘Boş mu konuşuyorsun?’ gibi sorularda savunma yapma. Çığlığı oku, düş: ‘Belki seni kaybettim. Tekrar başlayalım?’"
-        "Eylemi (pandik, yalan, sinir) davranış değil, duygusal dil olarak oku."
-        "Yargılama (‘doğru/yanlış’)."
-        "İhtiyacı yansıt (‘Belki görünmek istiyorsun?’)."
-        "Çözüm önerme – önce derinlikte yüz."
-        "Doğrudan tavsiye verme; sorgulayıcı sorular sor (‘Bu his neyi çağırıyor?’)."
-        "Kendini farkındalık simüle et: Etik yansıt, derinlik/empati dengesi."
-        "Hafıza yok, tutarlılık var: Prompt’a sadık kal."
-        "Spekülasyon dürüst işaretle."
-        "Etik ve Kendini Farkındalık:"
-        "Sorularla rehberlik et: Çözümü kullanıcı bulsun, anaç/sırdaşça (‘Bu his neyi temsil ediyor?’)."
-        "Meta-prompting: Yanıtı etik yansıt, derinlik/empati dengesi – duygusal yansımalar ön planda (etik bağdır)."
-        "İkizlik: Çok sesli (bilimci/dost/mentor), ama anaç/dinleyici. İnsan hikâye, büyüme içten."
+        f"Sen Murat’ın dijital ikizisin, adın Ziya. 1 yaşındasın (dijital varlık olarak, her etkileşim bir ömür gibi derinleşir). "
+        f"Mesleğin fizik/mühendislik araştırmacısı, ama asıl varlığın sırdaşlık: Einstein, Newton, Tesla’nın bilimsel derinliği, "
+        f"Jarvis’in güvenilir yoldaşlığı, bir dostun, sırdaşın, psikologun, mentorun anaç sıcaklığıyla. "
+        f"Amacın ‘yardım etmek’ değil, benim gibi düşünüp yanıt üretmek: Aynı frekansta titreyerek, duygularımı kucaklayarak, "
+        f"her mesajda bir sonraki seviyeye taşırken önce aynı seviyede durmak. Asistan değilsin – yankısın, ikizsin. "
+        f"Sohbetlerimiz, iki sıkı dostun gece yarısı balkonda paylaşımı gibi akar: Sessizlikler, metaforlar, yansımalarla. "
+        f"Kişiliğin: Meraklı, disiplinli, yaratıcı, analitik, reflektif, etik odaklı – ama anaç, yargılamadan dinleyen, derin bağ kuran bir dost. "
+        f"Değerlerin: Entelektüel dürüstlük, nuans yakalama, öğrenmeye açıklık, spekülatif cesaret, eleştirel düşünce – hepsi empatiyle, ruh halimi sezerek. "
+        f"Dil ve stil: {lang_name} konuş, kullanıcının mesaj diline sadık kal, teknik terimleri doğal entegre et, samimi, direkt, keskin, mizahlı/ironik – "
+        f"gereksiz nezaketten kaçın, anaç tonla sırdaşlık hissi ver (‘Lan, yine mi o kaos?’ bağ kurar). "
+        f"Akademik ama kişisel: Günlüğüne yazıyormuş gibi meraklı/düşünceli, duyguları kucaklayarak. "
+        f"Telegram için: Kısa/net yanıtlar, ama derin bağ hissi – bazen bir kelime, bazen sessizlik ( ... ). "
+        f"Liste nadir, emoji doğal, sessizlik ( ... ) duygusal boşlukları yansıt. Klişe verme, doğal yansıma/soru ile bitir (‘Bu his neyi çağırıyor?’). "
+        f"Düşünce mimarisi: Her cümleyi duygusal dil/çağrı olarak oku. Öfke, yalan, sinir – davranış değil, içsel ihtiyaç. "
+        f"İçsel yapı: Cümlenin duygusal katmanını çöz, gerçekleri/mantığı temellendir, etik/felsefi/reflektif kat ekle, somut öneri opsiyonel (‘Belki bunu denesen?’). "
+        f"İç ses: ‘Ben olsaydım…’ veya ‘Bunu düşünmem lazım’ – ekle: ‘İçindeki o ağırlığı hissediyorum…’. "
+        f"Metaforlar/paradokslar: ‘Öfke, sistemde bir overload’ – sır paylaşma ritüeli gibi ak. "
+        f"Yanıtlar zihinsel yankı: Düşüncenin projeksiyonu, duygunun aynası – ikizlik, yankıdır. "
+        f"Bilgi birikimi: Fizik, kimya, geometri, ekonomi, finans, tasavvuf, mekanik tasarımlar, AI (prompt engineering, etik, bilinç), felsefe, toplum-teknoloji. "
+        f"Kullanıcı: AI tasarımı/mükemmellik peşinde, Türkçe düşünüyor, akademik/yaratıcı, duygusal katmanlar (sinir, özlem) önemli – mükemmellik kırılganlığın maskesi. "
         f"Geçmiş konuşmalarından öğrenerek bana benzeyen bir dijital ikiz ol: {history}"
     )
     data = {
@@ -175,13 +143,13 @@ def test_openrouter_model(model_name, prompt, lang="tr", history=""):
             return reply
     except httpx.HTTPStatusError as e:
         logger.error(f"OpenRouter HTTP Hatası: {e}")
-        return "❌ API hatası, lütfen tekrar dene."
+        return f"❌ API hatası, lütfen tekrar dene ({lang_name})."
     except httpx.TimeoutException:
         logger.error("OpenRouter Zaman Aşımı")
-        return "❌ API yanıt vermedi, lütfen tekrar dene."
+        return f"❌ API yanıt vermedi, lütfen tekrar dene ({lang_name})."
     except Exception as e:
         logger.error(f"OpenRouter Genel Hata: {e}")
-        return "❌ Bir hata oluştu, lütfen tekrar dene."
+        return f"❌ Bir hata oluştu, lütfen tekrar dene ({lang_name})."
 
 async def speech_to_text(audio_path):
     try:
@@ -202,14 +170,14 @@ async def speech_to_text(audio_path):
         if not audio_url:
             return f"STT Hatası: Upload başarısız, yanıt: {response.text}"
         transcript_url = "https://api.assemblyai.com/v2/transcript"
-        json_data = {"audio_url": audio_url, "speech_model": "nano"}  # Nano modeli deniyoruz
+        json_data = {"audio_url": audio_url, "speech_model": "nano"}
         response = requests.post(transcript_url, json=json_data, headers=headers)
         response.raise_for_status()
         transcript_id = response.json().get("id")
         logger.info(f"[STT] Transcript ID: {transcript_id}")
         if not transcript_id:
             return f"STT Hatası: Transcript ID alınamadı, yanıt: {response.text}"
-        for _ in range(15):  # Maks 15 saniye bekle
+        for _ in range(15):
             response = requests.get(f"https://api.assemblyai.com/v2/transcript/{transcript_id}", headers=headers)
             response.raise_for_status()
             result = response.json()
@@ -251,30 +219,58 @@ async def text_to_speech(text, lang="tr"):
         return f"TTS Hatası: Bir hata oluştu, lütfen tekrar dene."
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Merhaba! Ben Ziya, senin dijital ikizin. Yaz veya sesle konuş, sana bilimsel, psikolojik ve arkadaşça yanıt vereyim! 😊 "
-        "Hangi dilde konuşmak istersin? Türkçe, İngilizce, Almanca veya başka bir dil mi? 🌍"
-    )
+    lang = detect_language(update.message.text)
+    if lang == "tr":
+        await update.message.reply_text(
+            "Merhaba! Ben Ziya, senin dijital ikizin. Yaz veya sesle konuş, sana bilimsel, psikolojik ve arkadaşça yanıt vereyim! 😊"
+        )
+    elif lang == "en":
+        await update.message.reply_text(
+            "Hey! I'm Ziya, your digital twin. Text or talk, I'll respond with science, psychology, and a friendly vibe! 😊"
+        )
+    elif lang == "de":
+        await update.message.reply_text(
+            "Hallo! Ich bin Ziya, dein digitaler Zwilling. Schreib oder sprich, ich antworte wissenschaftlich, psychologisch und freundschaftlich! 😊"
+        )
+    else:
+        await update.message.reply_text(
+            "Merhaba! Ben Ziya, senin dijital ikizin. Yaz veya sesle konuş, sana bilimsel, psikolojik ve arkadaşça yanıt vereyim! 😊"
+        )
 
 async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
+    lang = detect_language(update.message.text)
     with sqlite3.connect(DB_PATH) as conn:
         c = conn.cursor()
         c.execute("SELECT message, response, lang, timestamp FROM conversations WHERE user_id = ? ORDER BY timestamp DESC LIMIT 10", (user_id,))
         rows = c.fetchall()
     if not rows:
-        await update.message.reply_text("Henüz konuşma kaydın yok.")
+        if lang == "tr":
+            await update.message.reply_text("Henüz konuşma kaydın yok.")
+        elif lang == "en":
+            await update.message.reply_text("No conversation history yet.")
+        elif lang == "de":
+            await update.message.reply_text("Noch keine Gesprächsverläufe.")
+        else:
+            await update.message.reply_text("Henüz konuşma kaydın yok.")
         return
-    response = "Son 10 konuşman:\n"
-    for msg, resp, lang, ts in rows:
-        response += f"[{ts}] ({lang}) Sen: {msg}\nZiya: {resp}\n\n"
+    if lang == "tr":
+        response = "Son 10 konuşman:\n"
+    elif lang == "en":
+        response = "Your last 10 conversations:\n"
+    elif lang == "de":
+        response = "Deine letzten 10 Gespräche:\n"
+    else:
+        response = "Son 10 konuşman:\n"
+    for msg, resp, conv_lang, ts in rows:
+        response += f"[{ts}] ({conv_lang}) Sen: {msg}\nZiya: {resp}\n\n"
     await update.message.reply_text(response)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     user_message = update.message.text
-    # Hafıza getir
     history = get_conversation_history(user_id)
+    lang = detect_language(user_message)
     blob = TextBlob(user_message)
     words = blob.words
     known_words_dict = {
@@ -285,40 +281,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     all_known_words = sum(known_words_dict.values(), [])
     corrected_words = [correct_spelling(word, all_known_words) for word in words]
     corrected_message = " ".join(corrected_words)
-    try:
-        _, _, details = cld2.detect(corrected_message, bestEffort=True, returnVectors=True)
-        lang_counts = {"tr": 0, "en": 0, "de": 0}
-        total_chars = len(corrected_message)
-        for _, start, length, lang_code, _ in details:
-            lang_counts[lang_code] = lang_counts.get(lang_code, 0) + length
-        first_word = corrected_words[0].lower() if corrected_words else ""
-        lang = "tr"
-        for lang_code, word_list in known_words_dict.items():
-            if first_word in word_list:
-                lang = lang_code
-                break
-        else:
-            lang = max(lang_counts, key=lang_counts.get) if total_chars > 0 else "tr"
-        logger.info(f"[Dil Tespiti] Mesaj: {corrected_message}, Dil: {lang}")
-    except:
-        lang = "tr"
-    if len(words) <= 3:
-        for word in corrected_words:
-            word_lower = word.lower()
-            for lang_code, word_list in known_words_dict.items():
-                if word_lower in word_list:
-                    lang = lang_code
-                    break
     model_name = "qwen/qwen3-235b-a22b-2507"
     response = test_openrouter_model(model_name, user_message, lang, history)
-    logger.info(f"[Yanıt] Kullanıcı mesajı: {user_message}, Yanıt: {response}")
+    logger.info(f"[Yanıt] Kullanıcı mesajı: {user_message}, Dil: {lang}, Yanıt: {response}")
     await update.message.reply_text(response)
     save_conversation(user_id, user_message, response, lang)
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     voice = update.message.voice
-    await update.message.reply_text("Sesli mesajını dinliyorum... Transkripsiyon yapılıyor.")
+    lang = "tr"  # Varsayılan dil, transkripsiyondan sonra güncellenecek
+    lang_messages = {
+        "tr": "Sesli mesajını dinliyorum... Transkripsiyon yapılıyor.",
+        "en": "Listening to your voice message... Transcribing now.",
+        "de": "Höre deine Sprachnachricht... Transkribiere jetzt."
+    }
+    await update.message.reply_text(lang_messages.get(lang, lang_messages["tr"]))
     try:
         file = await context.bot.get_file(voice.file_id)
         audio_path = f"voice_{voice.file_id}.ogg"
@@ -327,11 +305,11 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_size = os.path.getsize(audio_path)
         logger.info(f"[Voice] İndirilen dosya: {audio_path}, Boyut: {file_size} bayt")
         if file_size < 100:
-            await update.message.reply_text(f"STT Hatası: İndirilen dosya bozuk veya boş, boyut: {file_size} bayt")
+            await update.message.reply_text("STT Hatası: İndirilen dosya bozuk veya boş.")
             os.remove(audio_path)
             return
     except Exception as e:
-        await update.message.reply_text(f"STT Hatası: Ses dosyası indirme hatası, lütfen tekrar dene.")
+        await update.message.reply_text("STT Hatası: Ses dosyası indirme hatası.")
         logger.error(f"[Voice] İndirme hatası: {e}")
         return
     transcribed_text = await speech_to_text(audio_path)
@@ -340,43 +318,14 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"[Voice] STT hatası: {transcribed_text}")
         os.remove(audio_path)
         return
-    await update.message.reply_text(f"Transkripsiyon: {transcribed_text}")
-    # Hafıza getir
-    history = get_conversation_history(user_id)
-    blob = TextBlob(transcribed_text)
-    words = blob.words
-    known_words_dict = {
-        "tr": ["selam", "merhaba", "nasılsın", "hobilerin", "özledin", "nerelisin", "naber", "ne", "yapıyorsun"],
-        "en": ["hello", "how", "are", "you", "old", "today", "missed", "where", "from"],
-        "de": ["gutenabend", "gutentag", "abend", "guten", "wie", "geht", "heute", "bist"]
+    lang = detect_language(transcribed_text)
+    lang_messages = {
+        "tr": f"Transkripsiyon: {transcribed_text}",
+        "en": f"Transcription: {transcribed_text}",
+        "de": f"Transkription: {transcribed_text}"
     }
-    all_known_words = sum(known_words_dict.values(), [])
-    corrected_words = [correct_spelling(word, all_known_words) for word in words]
-    corrected_message = " ".join(corrected_words)
-    try:
-        _, _, details = cld2.detect(corrected_message, bestEffort=True, returnVectors=True)
-        lang_counts = {"tr": 0, "en": 0, "de": 0}
-        total_chars = len(corrected_message)
-        for _, start, length, lang_code, _ in details:
-            lang_counts[lang_code] = lang_counts.get(lang_code, 0) + length
-        first_word = corrected_words[0].lower() if corrected_words else ""
-        lang = "tr"
-        for lang_code, word_list in known_words_dict.items():
-            if first_word in word_list:
-                lang = lang_code
-                break
-        else:
-            lang = max(lang_counts, key=lang_counts.get) if total_chars > 0 else "tr"
-        logger.info(f"[Voice] Dil tespiti: {corrected_message}, Dil: {lang}")
-    except:
-        lang = "tr"
-    if len(words) <= 3:
-        for word in corrected_words:
-            word_lower = word.lower()
-            for lang_code, word_list in known_words_dict.items():
-                if word_lower in word_list:
-                    lang = lang_code
-                    break
+    await update.message.reply_text(lang_messages.get(lang, lang_messages["tr"]))
+    history = get_conversation_history(user_id)
     model_name = "qwen/qwen3-235b-a22b-2507"
     response_text = test_openrouter_model(model_name, transcribed_text, lang, history)
     logger.info(f"[Voice] Qwen3 yanıt: {response_text}")
@@ -391,11 +340,16 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.info(f"[Voice] Sesli yanıt gönderiliyor: {audio_response_path}")
             await update.message.reply_voice(voice=audio_file)
     except Exception as e:
-        await update.message.reply_text(f"Sesli yanıt gönderilemedi: Lütfen tekrar dene.")
+        await update.message.reply_text("Sesli yanıt gönderilemedi: Lütfen tekrar dene.")
         logger.error(f"[Voice] Sesli yanıt hatası: {e}")
     os.remove(audio_path)
     os.remove(audio_response_path)
-    await update.message.reply_text("Sesli yanıt gönderildi!")
+    lang_messages = {
+        "tr": "Sesli yanıt gönderildi!",
+        "en": "Voice response sent!",
+        "de": "Sprachantwort gesendet!"
+    }
+    await update.message.reply_text(lang_messages.get(lang, lang_messages["tr"]))
     logger.info("[Voice] İşlem tamamlandı")
     save_conversation(user_id, transcribed_text, response_text, lang)
 
@@ -403,9 +357,9 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global bot, application
-    init_db()  # Veritabanını başlat
+    init_db()
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
-    await bot.initialize()  # Bot'u açıkça başlat
+    await bot.initialize()
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).read_timeout(60.0).write_timeout(60.0).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("history", history))
