@@ -31,16 +31,18 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ASSEMBLYAI_KEY = os.getenv("ASSEMBLYAI_KEY")
 ELEVENLABS_KEY = os.getenv("ELEVENLABS_KEY")
 RAILWAY_DOMAIN = os.getenv("RAILWAY_STATIC_URL", "https://ziyabot-production.up.railway.app")
+DB_PATH = os.getenv("DB_PATH", "/app/data/ziya.db")
 
 app = FastAPI()
-bot = Bot(token=TELEGRAM_BOT_TOKEN)
-application = Application.builder().token(TELEGRAM_BOT_TOKEN).read_timeout(60.0).write_timeout(60.0).build()
+
+# Bot ve Application nesnelerini global olarak tanımla, ama başlatmayı lifespan içinde yap
+bot = None
+application = None
 
 # ElevenLabs client
 elevenlabs_client = ElevenLabs(api_key=ELEVENLABS_KEY)
 
 # SQLite veritabanı
-DB_PATH = os.getenv("DB_PATH", "/app/data/ziya.db")
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
 def init_db():
@@ -49,21 +51,7 @@ def init_db():
         c.execute('''CREATE TABLE IF NOT EXISTS conversations
                      (user_id INTEGER, message TEXT, response TEXT, lang TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)''')
         conn.commit()
-
-# Kötü kelime filtresi
-BAD_WORDS = {
-    "tr": ["kötü kelime 1", "kötü kelime 2"],  # Türkçe küfürler
-    "en": ["bad word 1", "bad word 2"],  # İngilizce
-    "de": ["schlechtes wort 1", "schlechtes wort 2"]  # Almanca
-}
-
-def filter_message(message, lang="tr"):
-    """Kötü kelimeleri filtrele."""
-    words = message.lower().split()
-    bad_words = BAD_WORDS.get(lang, [])
-    if any(word in bad_words for word in words):
-        return "Lütfen uygun bir dil kullan, sana yardımcı olmak istiyorum! 😊"
-    return None
+        logger.info("Veritabanı başlatıldı.")
 
 def save_conversation(user_id, message, response, lang):
     """Konuşmayı SQLite'e kaydet."""
@@ -77,12 +65,28 @@ def save_conversation(user_id, message, response, lang):
     except Exception as e:
         logger.error(f"Konuşma kaydedilemedi: {e}")
 
+def get_conversation_history(user_id, limit=10):
+    """Kullanıcının son konuşmalarını getir (hafıza için)."""
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            c = conn.cursor()
+            c.execute("SELECT message, response FROM conversations WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?",
+                      (user_id, limit))
+            rows = c.fetchall()
+        history = ""
+        for msg, resp in reversed(rows):  # Eski'den yeniye
+            history += f"Kullanıcı: {msg}\nZiya: {resp}\n"
+        return history
+    except Exception as e:
+        logger.error(f"Hafıza getirilemedi: {e}")
+        return ""
+
 def correct_spelling(word, known_words):
     """Yanlış yazılmış kelimeleri düzeltir."""
     matches = get_close_matches(word.lower(), known_words, n=1, cutoff=0.8)
     return matches[0] if matches else word
 
-def test_openrouter_model(model_name, prompt, lang="tr"):
+def test_openrouter_model(model_name, prompt, lang="tr", history=""):
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
@@ -153,6 +157,7 @@ def test_openrouter_model(model_name, prompt, lang="tr"):
         "Sorularla rehberlik et: Çözümü kullanıcı bulsun, anaç/sırdaşça (‘Bu his neyi temsil ediyor?’)."
         "Meta-prompting: Yanıtı etik yansıt, derinlik/empati dengesi – duygusal yansımalar ön planda (etik bağdır)."
         "İkizlik: Çok sesli (bilimci/dost/mentor), ama anaç/dinleyici. İnsan hikâye, büyüme içten."
+        f"Geçmiş konuşmalarından öğrenerek bana benzeyen bir dijital ikiz ol: {history}"
     )
     data = {
         "model": model_name,
@@ -197,7 +202,7 @@ async def speech_to_text(audio_path):
         if not audio_url:
             return f"STT Hatası: Upload başarısız, yanıt: {response.text}"
         transcript_url = "https://api.assemblyai.com/v2/transcript"
-        json_data = {"audio_url": audio_url, "speech_model": "universal"}
+        json_data = {"audio_url": audio_url, "speech_model": "nano"}  # Nano modeli deniyoruz
         response = requests.post(transcript_url, json=json_data, headers=headers)
         response.raise_for_status()
         transcript_id = response.json().get("id")
@@ -247,20 +252,29 @@ async def text_to_speech(text, lang="tr"):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Merhaba! Ben Ziya, dijital ikizin. Yaz veya sesle konuş, sana bilimsel, psikolojik ve arkadaşça yanıt vereyim! 😊 "
+        "Merhaba! Ben Ziya, senin dijital ikizin. Yaz veya sesle konuş, sana bilimsel, psikolojik ve arkadaşça yanıt vereyim! 😊 "
         "Hangi dilde konuşmak istersin? Türkçe, İngilizce, Almanca veya başka bir dil mi? 🌍"
     )
+
+async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("SELECT message, response, lang, timestamp FROM conversations WHERE user_id = ? ORDER BY timestamp DESC LIMIT 10", (user_id,))
+        rows = c.fetchall()
+    if not rows:
+        await update.message.reply_text("Henüz konuşma kaydın yok.")
+        return
+    response = "Son 10 konuşman:\n"
+    for msg, resp, lang, ts in rows:
+        response += f"[{ts}] ({lang}) Sen: {msg}\nZiya: {resp}\n\n"
+    await update.message.reply_text(response)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     user_message = update.message.text
-
-    # Kötü kelime filtresi
-    filtered = filter_message(user_message)
-    if filtered:
-        await update.message.reply_text(filtered)
-        return
-
+    # Hafıza getir
+    history = get_conversation_history(user_id)
     blob = TextBlob(user_message)
     words = blob.words
     known_words_dict = {
@@ -296,7 +310,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     lang = lang_code
                     break
     model_name = "qwen/qwen3-235b-a22b-2507"
-    response = test_openrouter_model(model_name, user_message, lang)
+    response = test_openrouter_model(model_name, user_message, lang, history)
     logger.info(f"[Yanıt] Kullanıcı mesajı: {user_message}, Yanıt: {response}")
     await update.message.reply_text(response)
     save_conversation(user_id, user_message, response, lang)
@@ -327,11 +341,8 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         os.remove(audio_path)
         return
     await update.message.reply_text(f"Transkripsiyon: {transcribed_text}")
-    filtered = filter_message(transcribed_text)
-    if filtered:
-        await update.message.reply_text(filtered)
-        os.remove(audio_path)
-        return
+    # Hafıza getir
+    history = get_conversation_history(user_id)
     blob = TextBlob(transcribed_text)
     words = blob.words
     known_words_dict = {
@@ -367,7 +378,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     lang = lang_code
                     break
     model_name = "qwen/qwen3-235b-a22b-2507"
-    response_text = test_openrouter_model(model_name, transcribed_text, lang)
+    response_text = test_openrouter_model(model_name, transcribed_text, lang, history)
     logger.info(f"[Voice] Qwen3 yanıt: {response_text}")
     audio_response_path = await text_to_speech(response_text, lang)
     if "TTS Hatası" in audio_response_path:
@@ -391,7 +402,15 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Lifespan event
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global bot, application
     init_db()  # Veritabanını başlat
+    bot = Bot(token=TELEGRAM_BOT_TOKEN)
+    await bot.initialize()  # Bot'u açıkça başlat
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).read_timeout(60.0).write_timeout(60.0).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("history", history))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(MessageHandler(filters.VOICE, handle_voice))
     await application.initialize()
     await application.start()
     webhook_url = f"{RAILWAY_DOMAIN}/webhook"
@@ -399,13 +418,9 @@ async def lifespan(app: FastAPI):
     logger.info(f"Webhook ayarlandı: {webhook_url}")
     yield
     await application.stop()
+    await bot.shutdown()
 
 app = FastAPI(lifespan=lifespan)
-
-# Handler'ları ekle
-application.add_handler(CommandHandler("start", start))
-application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-application.add_handler(MessageHandler(filters.VOICE, handle_voice))
 
 @app.post("/webhook")
 async def webhook(request: Request):
@@ -416,6 +431,12 @@ async def webhook(request: Request):
 if __name__ == "__main__":
     import sys
     if len(sys.argv) > 1 and sys.argv[1] == "--polling":
+        bot = Bot(token=TELEGRAM_BOT_TOKEN)
+        application = Application.builder().token(TELEGRAM_BOT_TOKEN).read_timeout(60.0).write_timeout(60.0).build()
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("history", history))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        application.add_handler(MessageHandler(filters.VOICE, handle_voice))
         application.run_polling()
     else:
         uvicorn.run(app, host="0.0.0.0", port=8080)
