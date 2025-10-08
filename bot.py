@@ -17,7 +17,8 @@ import httpx
 from difflib import get_close_matches
 from elevenlabs.client import ElevenLabs
 from elevenlabs import save
-from transformers import pipeline
+from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
+import torch
 import librosa
 
 # Loglama yapılandırması
@@ -43,8 +44,9 @@ application = None
 # ElevenLabs client
 elevenlabs_client = ElevenLabs(api_key=ELEVENLABS_KEY)
 
-# Whisper modeli (bir kere yüklenir, global olarak kullanılır)
-whisper_pipe = None
+# wav2vec2 model ve processor (başlatma global)
+processor = Wav2Vec2Processor.from_pretrained("mpoyraz/wav2vec2-xls-r-300m-cv7-turkish")
+model = Wav2Vec2ForCTC.from_pretrained("mpoyraz/wav2vec2-xls-r-300m-cv7-turkish")
 
 # SQLite veritabanı
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -98,13 +100,11 @@ def detect_language(message):
         "de": ["gutenabend", "gutentag", "abend", "guten", "wie", "geht", "heute", "bist"]
     }
     try:
-        # İlk kelimeye bakarak dil tahmini
         words = message.lower().split()
         first_word = words[0] if words else ""
         for lang, word_list in known_words_dict.items():
             if first_word in word_list:
                 return lang
-        # langdetect ile genel tespit
         lang = detect(message)
         return lang if lang in ['tr', 'en', 'de'] else 'tr'
     except:
@@ -168,21 +168,18 @@ def test_openrouter_model(model_name, prompt, lang="tr", history=""):
         return f"❌ Bir hata oluştu, lütfen tekrar dene ({lang_name})."
 
 async def speech_to_text(audio_path):
-    global whisper_pipe
     try:
-        # Whisper modelini ilk kez yükle
-        if whisper_pipe is None:
-            logger.info("Whisper modeli yükleniyor...")
-            whisper_pipe = pipeline("automatic-speech-recognition", model="openai/whisper-small")
-            logger.info("Whisper modeli yüklendi.")
-        # Ses dosyasını yükle ve transkribe et
-        result = whisper_pipe(audio_path, generate_kwargs={"language": "tr"})  # Türkçe için optimize
-        text = result["text"]
-        logger.info(f"[STT] Transkripsiyon: {text}")
-        return text
+        audio, sr = librosa.load(audio_path, sr=16000)
+        inputs = processor(audio, sampling_rate=16000, return_tensors="pt", padding=True)
+        with torch.no_grad():
+            logits = model(inputs.input_values).logits
+        predicted_ids = torch.argmax(logits, dim=-1)
+        transcription = processor.batch_decode(predicted_ids)[0]
+        logger.info(f"[STT] Transkripsiyon: {transcription}")
+        return transcription
     except Exception as e:
         logger.error(f"[STT] Hata: {e}")
-        return f"STT Hatası: Bir hata oluştu, lütfen tekrar dene."
+        return f"STT Hatası: Transkripsiyon başarısız, hata: {str(e)}"
 
 async def text_to_speech(text, lang="tr"):
     voice_id = "mBUB5zYuPwfVE6DTcEjf"  # Eda Atlas
@@ -274,7 +271,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     voice = update.message.voice
-    lang = "tr"  # Varsayılan dil, transkripsiyondan sonra güncellenecek
+    lang = "tr"
     lang_messages = {
         "tr": "Sesli mesajını dinliyorum... Transkripsiyon yapılıyor.",
         "en": "Listening to your voice message... Transcribing now.",
