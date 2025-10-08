@@ -17,9 +17,7 @@ import httpx
 from difflib import get_close_matches
 from elevenlabs.client import ElevenLabs
 from elevenlabs import save
-from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
-import torch
-import librosa
+from transformers import pipeline
 
 # Loglama yapılandırması
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -44,9 +42,8 @@ application = None
 # ElevenLabs client
 elevenlabs_client = ElevenLabs(api_key=ELEVENLABS_KEY)
 
-# wav2vec2 model ve processor (başlatma global)
-processor = Wav2Vec2Processor.from_pretrained("mpoyraz/wav2vec2-xls-r-300m-cv7-turkish")
-model = Wav2Vec2ForCTC.from_pretrained("mpoyraz/wav2vec2-xls-r-300m-cv7-turkish")
+# Whisper pipeline (global başlatma)
+whisper_pipe = pipeline("automatic-speech-recognition", model="openai/whisper-small", device=-1)  # CPU için
 
 # SQLite veritabanı
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -169,12 +166,8 @@ def test_openrouter_model(model_name, prompt, lang="tr", history=""):
 
 async def speech_to_text(audio_path):
     try:
-        audio, sr = librosa.load(audio_path, sr=16000)
-        inputs = processor(audio, sampling_rate=16000, return_tensors="pt", padding=True)
-        with torch.no_grad():
-            logits = model(inputs.input_values).logits
-        predicted_ids = torch.argmax(logits, dim=-1)
-        transcription = processor.batch_decode(predicted_ids)[0]
+        result = whisper_pipe(audio_path, generate_kwargs={"language": "tr"})  # Türkçe için optimize
+        transcription = result["text"]
         logger.info(f"[STT] Transkripsiyon: {transcription}")
         return transcription
     except Exception as e:
