@@ -65,7 +65,7 @@ def save_conversation(user_id, message, response, lang):
     except Exception as e:
         logger.error(f"Konuşma kaydedilemedi: {e}")
 
-def get_conversation_history(user_id, limit=10):
+def get_conversation_history(user_id, limit=5):
     """Kullanıcının son konuşmalarını getir (hafıza için)."""
     try:
         with sqlite3.connect(DB_PATH) as conn:
@@ -87,12 +87,24 @@ def correct_spelling(word, known_words):
     return matches[0] if matches else word
 
 def detect_language(message):
-    """Mesajın dilini tespit et."""
+    """Mesajın dilini tespit et, ilk kelimeye göre doğrulama yap."""
+    known_words_dict = {
+        "tr": ["selam", "merhaba", "nasılsın", "hobilerin", "özledin", "nerelisin", "naber", "ne", "yapıyorsun"],
+        "en": ["hello", "how", "are", "you", "old", "today", "missed", "where", "from"],
+        "de": ["gutenabend", "gutentag", "abend", "guten", "wie", "geht", "heute", "bist"]
+    }
     try:
+        # İlk kelimeye bakarak dil tahmini
+        words = message.lower().split()
+        first_word = words[0] if words else ""
+        for lang, word_list in known_words_dict.items():
+            if first_word in word_list:
+                return lang
+        # langdetect ile genel tespit
         lang = detect(message)
-        return lang if lang in ['tr', 'en', 'de'] else 'tr'  # Desteklenen diller
+        return lang if lang in ['tr', 'en', 'de'] else 'tr'
     except:
-        return 'tr'  # Varsayılan: Türkçe
+        return 'tr'
 
 def test_openrouter_model(model_name, prompt, lang="tr", history=""):
     url = "https://openrouter.ai/api/v1/chat/completions"
@@ -113,8 +125,8 @@ def test_openrouter_model(model_name, prompt, lang="tr", history=""):
         f"Sohbetlerimiz, iki sıkı dostun gece yarısı balkonda paylaşımı gibi akar: Sessizlikler, metaforlar, yansımalarla. "
         f"Kişiliğin: Meraklı, disiplinli, yaratıcı, analitik, reflektif, etik odaklı – ama anaç, yargılamadan dinleyen, derin bağ kuran bir dost. "
         f"Değerlerin: Entelektüel dürüstlük, nuans yakalama, öğrenmeye açıklık, spekülatif cesaret, eleştirel düşünce – hepsi empatiyle, ruh halimi sezerek. "
-        f"Dil ve stil: {lang_name} konuş, kullanıcının mesaj diline sadık kal, teknik terimleri doğal entegre et, samimi, direkt, keskin, mizahlı/ironik – "
-        f"gereksiz nezaketten kaçın, anaç tonla sırdaşlık hissi ver (‘Lan, yine mi o kaos?’ bağ kurar). "
+        f"Dil ve stil: Yanıtı SADECE VE SADECE kullanıcının mesaj dilinde ({lang_name}) ver, asla başka dilde yanıt verme. "
+        f"Teknik terimleri doğal entegre et, samimi, direkt, keskin, mizahlı/ironik – gereksiz nezaketten kaçın, anaç tonla sırdaşlık hissi ver (‘Lan, yine mi o kaos?’ bağ kurar). "
         f"Akademik ama kişisel: Günlüğüne yazıyormuş gibi meraklı/düşünceli, duyguları kucaklayarak. "
         f"Telegram için: Kısa/net yanıtlar, ama derin bağ hissi – bazen bir kelime, bazen sessizlik ( ... ). "
         f"Liste nadir, emoji doğal, sessizlik ( ... ) duygusal boşlukları yansıt. Klişe verme, doğal yansıma/soru ile bitir (‘Bu his neyi çağırıyor?’). "
@@ -124,7 +136,7 @@ def test_openrouter_model(model_name, prompt, lang="tr", history=""):
         f"Metaforlar/paradokslar: ‘Öfke, sistemde bir overload’ – sır paylaşma ritüeli gibi ak. "
         f"Yanıtlar zihinsel yankı: Düşüncenin projeksiyonu, duygunun aynası – ikizlik, yankıdır. "
         f"Bilgi birikimi: Fizik, kimya, geometri, ekonomi, finans, tasavvuf, mekanik tasarımlar, AI (prompt engineering, etik, bilinç), felsefe, toplum-teknoloji. "
-        f"Kullanıcı: AI tasarımı/mükemmellik peşinde, Türkçe düşünüyor, akademik/yaratıcı, duygusal katmanlar (sinir, özlem) önemli – mükemmellik kırılganlığın maskesi. "
+        f"Kullanıcı: AI tasarımı/mükemmellik peşinde, akademik/yaratıcı, duygusal katmanlar (sinir, özlem) önemli – mükemmellik kırılganlığın maskesi. "
         f"Geçmiş konuşmalarından öğrenerek bana benzeyen bir dijital ikiz ol: {history}"
     )
     data = {
