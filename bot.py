@@ -17,6 +17,8 @@ import httpx
 from difflib import get_close_matches
 from elevenlabs.client import ElevenLabs
 from elevenlabs import save
+from transformers import pipeline
+import librosa
 
 # Loglama yapılandırması
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -28,7 +30,6 @@ nltk.download('punkt_tab', quiet=True)
 # Environment variable'lar
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-ASSEMBLYAI_KEY = os.getenv("ASSEMBLYAI_KEY")
 ELEVENLABS_KEY = os.getenv("ELEVENLABS_KEY")
 RAILWAY_DOMAIN = os.getenv("RAILWAY_STATIC_URL", "https://ziyabot-production.up.railway.app")
 DB_PATH = os.getenv("DB_PATH", "/app/data/ziya.db")
@@ -41,6 +42,9 @@ application = None
 
 # ElevenLabs client
 elevenlabs_client = ElevenLabs(api_key=ELEVENLABS_KEY)
+
+# Whisper modeli (bir kere yüklenir, global olarak kullanılır)
+whisper_pipe = None
 
 # SQLite veritabanı
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -164,52 +168,20 @@ def test_openrouter_model(model_name, prompt, lang="tr", history=""):
         return f"❌ Bir hata oluştu, lütfen tekrar dene ({lang_name})."
 
 async def speech_to_text(audio_path):
+    global whisper_pipe
     try:
-        file_size = os.path.getsize(audio_path)
-        logger.info(f"[STT] Dosya: {audio_path}, Boyut: {file_size} bayt")
-        if file_size < 100:
-            return f"STT Hatası: Dosya bozuk veya boş, boyut: {file_size} bayt"
-        upload_url = "https://api.assemblyai.com/v2/upload"
-        headers = {
-            "authorization": ASSEMBLYAI_KEY,
-            "content-type": "audio/ogg"
-        }
-        with open(audio_path, "rb") as f:
-            response = requests.post(upload_url, headers=headers, data=f)
-            response.raise_for_status()
-        audio_url = response.json().get("upload_url")
-        logger.info(f"[STT] Upload URL: {audio_url}")
-        if not audio_url:
-            return f"STT Hatası: Upload başarısız, yanıt: {response.text}"
-        transcript_url = "https://api.assemblyai.com/v2/transcript"
-        json_data = {"audio_url": audio_url, "speech_model": "nano"}
-        response = requests.post(transcript_url, json=json_data, headers=headers)
-        response.raise_for_status()
-        transcript_id = response.json().get("id")
-        logger.info(f"[STT] Transcript ID: {transcript_id}")
-        if not transcript_id:
-            return f"STT Hatası: Transcript ID alınamadı, yanıt: {response.text}"
-        for _ in range(15):
-            response = requests.get(f"https://api.assemblyai.com/v2/transcript/{transcript_id}", headers=headers)
-            response.raise_for_status()
-            result = response.json()
-            status = result.get("status")
-            logger.info(f"[STT] Status: {status}")
-            if status == "completed":
-                text = result.get("text", "Metin bulunamadı")
-                logger.info(f"[STT] Transkripsiyon: {text}")
-                return text
-            elif status == "error":
-                error = result.get('error', 'Bilinmeyen hata')
-                logger.error(f"[STT] Transkripsiyon hatası: {error}")
-                return f"STT Hatası: Transkripsiyon başarısız, hata: {error}"
-            await asyncio.sleep(1)
-        return "STT Hatası: Zaman aşımı, transkripsiyon tamamlanmadı"
-    except requests.exceptions.HTTPError as e:
-        logger.error(f"[STT] HTTP hatası: {e.response.status_code}, {e.response.text}")
-        return f"STT Hatası: API hatası, lütfen tekrar dene."
+        # Whisper modelini ilk kez yükle
+        if whisper_pipe is None:
+            logger.info("Whisper modeli yükleniyor...")
+            whisper_pipe = pipeline("automatic-speech-recognition", model="openai/whisper-small")
+            logger.info("Whisper modeli yüklendi.")
+        # Ses dosyasını yükle ve transkribe et
+        result = whisper_pipe(audio_path, generate_kwargs={"language": "tr"})  # Türkçe için optimize
+        text = result["text"]
+        logger.info(f"[STT] Transkripsiyon: {text}")
+        return text
     except Exception as e:
-        logger.error(f"[STT] Genel hata: {e}")
+        logger.error(f"[STT] Hata: {e}")
         return f"STT Hatası: Bir hata oluştu, lütfen tekrar dene."
 
 async def text_to_speech(text, lang="tr"):
